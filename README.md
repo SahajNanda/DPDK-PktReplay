@@ -12,9 +12,21 @@ A project built on DPDK + Pktgen to enable continuous packet transmission of lar
 
 ## dpdk-25.11
 - Compiled and installed first
+- Requires hugepages to be enabled (should be enabled by default on most systems)
 
 ## Pktgen-DPDK
 - Compiled against DPDK headers/libs, and links to DPDK libraries during runtime to send packets
+- Requires hugepages to be allocated and mounted
+    - Allocation can be done with `echo 1024 | sudo tee /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages`
+        - Pktgen docs say to check if it's enabled with `grep -i huge /boot/config-X.X.XX-XX-generic` which is not available in wsl, can instead be checked with `zcat /proc/config.gz | grep HUGETLB`
+            - Ensure `CONFIG_HUGETLBFS=y` and `CONFIG_HUGETLB_PAGE=y`
+        - Hugepage amounts can be checked with `grep -i huge /proc/meminfo`
+    - Mounting can be done with `sudo mkdir -p /dev/hugepages` followed by `sudo mount -t hugetlbfs nodev /dev/hugepages`
+
 
 ## containers
 - Docker containers testing server and client functionality
+- For testing purposes, a virtual ethernet (veth) pair is being used to connect the server and client
+    - This can be done by running `sudo ip link add veth0 type veth peer name veth1`, which creates a virtual veth cable with two ends, veth0 and veth1, with a peer connection which automatically sends data from one end to another
+    - The two ends must be enabled with `sudo ip link set veth0 up` and `sudo ip link set veth1 up` 
+    - This can be verified with `ip link show veth0` and `ip link show veth1`
