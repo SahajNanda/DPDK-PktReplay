@@ -2,6 +2,10 @@
 
 A project built on DPDK + Pktgen to enable continuous packet transmission of large PCAP files. This project aims to bypass the memory constraints of Pktgen by continously feeding new data into memory as Pktgen loops through the memory to send packets, allowing a large packet capture to be replayed while maintaining Pktgens speed and performance.
 
+## Quick Start
+- In WSL, run `./setup.sh`, followed by `start.sh`
+- Once container is open, run `./scripts/network-setup.sh`, followed by either `./scripts/sender-start.sh` or `./scripts/receiver-start.sh`
+
 ## Structure Overview
 
 ### [DPDK](/dpdk-25.11/) - Data Plane Development Kit: A Linux Foundation project that consists of libraries to accelerate packet processing workloads running on a wide variety of CPU architectures.
@@ -27,6 +31,6 @@ A project built on DPDK + Pktgen to enable continuous packet transmission of lar
 ## containers
 - Docker containers testing server and client functionality
 - For testing purposes, a virtual ethernet (veth) pair is being used to connect the server and client
-    - This can be done by running `sudo ip link add veth0 type veth peer name veth1`, which creates a virtual veth cable with two ends, veth0 and veth1, with a peer connection which automatically sends data from one end to another
-    - The two ends must be enabled with `sudo ip link set veth0 up` and `sudo ip link set veth1 up` 
+    - This can be done by running `ip link add veth0 type veth peer name veth1`, which creates a virtual veth cable with two ends, veth0 and veth1, with a peer connection which automatically sends data from one end to another
+    - The two ends must be enabled with `ip link set veth0 up` and `ip link set veth1 up` 
     - This can be verified with `ip link show veth0` and `ip link show veth1`

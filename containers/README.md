@@ -3,26 +3,28 @@
 ## Instructions
 
 ### Build and Run Docker Containers
-- To build (from top folder): `docker build -t dpdk-pktreplay -f containers/server/Dockerfile .`
+- To build (from top folder): `docker build -t dpdk-pktreplay -f containers/dpdk-pktreplay/Dockerfile .`
     - To build in debug mode, add docker `--build-arg BUILD_TYPE=debug`
         - Ex: `docker build --build-arg BUILD_TYPE=debug -t pktgen-debug .`
 
 - To run sender container: 
 ```bash
-docker run -it --privileged \ 
---network host \ 
--v /dev/hugepages:/dev/hugepages \ 
--v /lib/modules:/lib/modules \ 
+docker run -it --privileged \
+--name sender \
+--network host \
+-v /dev/hugepages:/dev/hugepages \
+-v /lib/modules:/lib/modules \
 dpdk-pktreplay /bin/bash
 ```
 
 - To run receiver container: 
 ```bash
-docker run -it --privileged \ 
---network host \ 
--v /dev/hugepages:/dev/hugepages \ 
--v /lib/modules:/lib/modules \ 
-dpdk-receiver /bin/bash
+docker run -it --privileged \
+--name receiver \
+--network host \
+-v /dev/hugepages:/dev/hugepages \
+-v /lib/modules:/lib/modules \
+dpdk-pktreplay /bin/bash
 ```
 
 ### Run Pktgen within the container

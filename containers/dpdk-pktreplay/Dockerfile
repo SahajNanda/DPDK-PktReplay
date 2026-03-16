@@ -59,5 +59,11 @@ RUN meson setup builddir \
     && meson install -C builddir \
     && ldconfig
 
+# Copy Startup Scripts
+COPY containers/dpdk-pktreplay/sender-start.sh /opt/Pktgen-DPDK/builddir/app/scripts/sender-start.sh
+COPY containers/dpdk-pktreplay/receiver-start.sh /opt/Pktgen-DPDK/builddir/app/scripts/receiver-start.sh
+COPY containers/dpdk-pktreplay/network-setup.sh /opt/Pktgen-DPDK/builddir/app/scripts/network-setup.sh
+RUN chmod +x /opt/Pktgen-DPDK/builddir/app/scripts/*
+
 # Change working directory to Pktgen for running tests
 WORKDIR /opt/Pktgen-DPDK/builddir/app
