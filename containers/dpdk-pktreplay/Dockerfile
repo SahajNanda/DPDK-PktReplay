@@ -65,5 +65,8 @@ COPY containers/dpdk-pktreplay/receiver-start.sh /opt/Pktgen-DPDK/builddir/app/s
 COPY containers/dpdk-pktreplay/network-setup.sh /opt/Pktgen-DPDK/builddir/app/scripts/network-setup.sh
 RUN chmod +x /opt/Pktgen-DPDK/builddir/app/scripts/*
 
+# Copy Data
+COPY data /opt/Pktgen-DPDK/builddir/app/data
+
 # Change working directory to Pktgen for running tests
 WORKDIR /opt/Pktgen-DPDK/builddir/app

@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # EAL options
-LCORES="${LCORES:-0-4}"
+LCORES="${LCORES:-0-2}"
 MEM_CHANNELS="${MEM_CHANNELS:-4}"
 IFACE="${IFACE:-veth1}"
 

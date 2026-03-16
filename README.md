@@ -3,7 +3,7 @@
 A project built on DPDK + Pktgen to enable continuous packet transmission of large PCAP files. This project aims to bypass the memory constraints of Pktgen by continously feeding new data into memory as Pktgen loops through the memory to send packets, allowing a large packet capture to be replayed while maintaining Pktgens speed and performance.
 
 ## Quick Start
-- In WSL, run `./setup.sh`, followed by `start.sh`
+- In WSL in this folder, run `./setup.sh`, followed by `./start.sh`
 - Once container is open, run `./scripts/network-setup.sh`, followed by either `./scripts/sender-start.sh` or `./scripts/receiver-start.sh`
 
 ## Structure Overview
