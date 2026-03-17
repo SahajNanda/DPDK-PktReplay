@@ -7,6 +7,17 @@ LCORES="${LCORES:-0-2}"
 MEM_CHANNELS="${MEM_CHANNELS:-4}"
 IFACE="${IFACE:-veth1}"
 
+if command -v pktgen > /dev/null 2>&1; then
+  PKTGEN_BIN="pktgen"
+elif [[ -x /DPDK-PktReplay/Pktgen-DPDK/builddir/app/pktgen ]]; then
+  PKTGEN_BIN="/DPDK-PktReplay/Pktgen-DPDK/builddir/app/pktgen"
+elif [[ -x /usr/local/bin/pktgen ]]; then
+  PKTGEN_BIN="/usr/local/bin/pktgen"
+else
+  echo "Error: pktgen binary not found in PATH, /DPDK-PktReplay/Pktgen-DPDK/builddir/app, or /usr/local/bin." >&2
+  exit 1
+fi
+
 # Pktgen options
 PORT_MAP="${PORT_MAP:-[1:2].0}"
 PCAP_PORT="${PCAP_PORT:-0}"
@@ -68,13 +79,14 @@ if [[ -n "${PCAP_FILE}" ]]; then
 fi
 
 echo "Starting Pktgen sender..."
+echo "  PKTGEN_BIN:   ${PKTGEN_BIN}"
 echo "  LCORES:      ${LCORES}"
 echo "  MEM_CHANNELS:${MEM_CHANNELS}"
 echo "  IFACE:       ${IFACE}"
 echo "  PORT_MAP:    ${PORT_MAP}"
 [[ -n "${PCAP_FILE}" ]] && echo "  PCAP_FILE:   ${PCAP_FILE} (port ${PCAP_PORT})"
 
-exec ./pktgen \
+exec "${PKTGEN_BIN}" \
     -l "${LCORES}" \
     -n "${MEM_CHANNELS}" \
     --vdev="net_pcap0,iface=${IFACE}" \

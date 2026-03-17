@@ -23,10 +23,10 @@ RUN apt-get update && apt-get install -y \
 ENV PKG_CONFIG_PATH=/usr/local/lib/x86_64-linux-gnu/pkgconfig
 
 # Copy DPDK Repository
-COPY dpdk-25.11 /opt/dpdk
+COPY dpdk-25.11 /DPDK-PktReplay/dpdk-25.11
 
 # Change working directory to DPDK
-WORKDIR /opt/dpdk
+WORKDIR /DPDK-PktReplay/dpdk-25.11
 
 # Set build type (can be changed to debug if needed)
 ARG BUILD_TYPE=release
@@ -44,14 +44,14 @@ RUN rm -rf build \
     && ldconfig
 
 # Environment variables for Pktgen to find DPDK
-ENV RTE_SDK=/opt/dpdk
+ENV RTE_SDK=/DPDK-PktReplay/dpdk-25.11
 ENV RTE_TARGET=build
 
 # Copy Pktgen Repository
-COPY Pktgen-DPDK /opt/Pktgen-DPDK
+COPY Pktgen-DPDK /DPDK-PktReplay/Pktgen-DPDK
 
 # Change working directory to Pktgen
-WORKDIR /opt/Pktgen-DPDK
+WORKDIR /DPDK-PktReplay/Pktgen-DPDK
 
 # Build and Install Pktgen
 RUN meson setup builddir \
@@ -60,13 +60,13 @@ RUN meson setup builddir \
     && ldconfig
 
 # Copy Startup Scripts
-COPY containers/dpdk-pktreplay/sender-start.sh /opt/Pktgen-DPDK/builddir/app/scripts/sender-start.sh
-COPY containers/dpdk-pktreplay/receiver-start.sh /opt/Pktgen-DPDK/builddir/app/scripts/receiver-start.sh
-COPY containers/dpdk-pktreplay/network-setup.sh /opt/Pktgen-DPDK/builddir/app/scripts/network-setup.sh
-RUN chmod +x /opt/Pktgen-DPDK/builddir/app/scripts/*
+COPY containers/dpdk-pktreplay/scripts /DPDK-PktReplay/scripts
+COPY containers/dpdk-pktreplay/start.sh /DPDK-PktReplay/start.sh
+RUN chmod +x /DPDK-PktReplay/scripts/*
+RUN chmod +x /DPDK-PktReplay/start.sh
 
 # Copy Data
-COPY data /opt/Pktgen-DPDK/builddir/app/data
+COPY data /DPDK-PktReplay/data
 
 # Change working directory to Pktgen for running tests
-WORKDIR /opt/Pktgen-DPDK/builddir/app
+WORKDIR /DPDK-PktReplay

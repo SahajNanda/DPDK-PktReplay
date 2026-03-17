@@ -1,4 +1,6 @@
-sources
+sources/
+notes/
+data/*.pcap
+
 __pycache__/
 *.pyc
-data/chunk*.pcap

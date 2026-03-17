@@ -14,10 +14,10 @@ fi
 
 if command -v dpdk-testpmd > /dev/null 2>&1; then
 	TESTPMD_BIN="dpdk-testpmd"
-elif [[ -x /opt/dpdk/build/app/dpdk-testpmd ]]; then
-	TESTPMD_BIN="/opt/dpdk/build/app/dpdk-testpmd"
+elif [[ -x /DPDK-PktReplay/dpdk-25.11/build/app/dpdk-testpmd ]]; then
+	TESTPMD_BIN="/DPDK-PktReplay/dpdk-25.11/build/app/dpdk-testpmd"
 else
-	echo "Error: dpdk-testpmd binary not found in PATH or /opt/dpdk/build/app." >&2
+	echo "Error: dpdk-testpmd binary not found in PATH or /DPDK-PktReplay/dpdk-25.11/build/app." >&2
 	exit 1
 fi
 
