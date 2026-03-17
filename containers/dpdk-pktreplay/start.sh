@@ -19,7 +19,7 @@ Modes:
   h | help        Show this help message
 
 No arguments:
-  Run network-setup.sh
+	Run network-setup.sh, then show this help message
 
 Examples:
   ./start.sh
@@ -39,14 +39,17 @@ MODE="${1:-}"
 
 case "${MODE}" in
 	"")
-		exec "${NETWORK_SETUP_SCRIPT}"
+		"${NETWORK_SETUP_SCRIPT}"
+		usage
 		;;
 	s|sender)
 		shift
+		"${NETWORK_SETUP_SCRIPT}"
 		exec "${SENDER_SCRIPT}" "$@"
 		;;
 	r|receiver)
 		shift
+		"${NETWORK_SETUP_SCRIPT}"
 		exec "${RECEIVER_SCRIPT}" "$@"
 		;;
 	h|help|-h|--help)
