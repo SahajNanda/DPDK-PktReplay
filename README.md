@@ -3,7 +3,7 @@
 A project built on DPDK + Pktgen to enable continuous packet transmission of large PCAP files. This project aims to bypass the memory constraints of Pktgen by continously feeding new data into memory as Pktgen loops through the memory to send packets, allowing a large packet capture to be replayed while maintaining Pktgens speed and performance.
 
 ## Quick Start
-- In WSL in this folder, run `./start.sh [-p|--hugepages COUNT]`
+- In WSL in this folder, run `./start.sh [-p|--hugepages COUNT]` to build image and allocate hugepages (each page is 2048 kB, default 1024 pages)
 - Run `./start.sh [-p|--hugepages COUNT] [s|sender|r|receiver|d|debug|a|allocate]` to run container or change hugepages allocation
 - Once container is open, run `./start.sh [s|sender|r|receiver]`
 

@@ -1,5 +1,4 @@
-sources/
-notes/
+research/
 data/*.pcap
 
 __pycache__/
