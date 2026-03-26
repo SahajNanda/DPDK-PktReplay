@@ -165,7 +165,6 @@ allocate_port_info(uint16_t pid)
 
     pinfo->pid     = pid;
     pinfo->max_mtu = RTE_ETHER_MAX_LEN;
-    //pinfo->max_mtu = RTE_ETHER_MTU; /* Default to standard MTU */
     pinfo->conf    = default_port_conf;
 
     if (rte_eth_dev_info_get(pid, &pinfo->dev_info) < 0) {
