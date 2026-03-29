@@ -137,6 +137,49 @@ mbuf_iterate_cb(struct rte_mempool *mp, void *opaque, void *obj, unsigned obj_id
     m->ol_flags = 0;
 }
 
+static struct rte_mempool *
+pcap_create_best_effort_pool(const char *name, uint16_t pid, uint16_t sid, uint32_t dataroom,
+                             uint32_t requested_count, uint32_t min_count,
+                             uint32_t *loaded_count)
+{
+    struct rte_mempool *mp = NULL;
+    uint32_t count         = requested_count;
+
+    if (loaded_count)
+        *loaded_count = 0;
+
+    if (count < min_count)
+        count = min_count;
+
+    for (;;) {
+        mp = rte_pktmbuf_pool_create(name, count, 0, DEFAULT_PRIV_SIZE, dataroom, sid);
+        if (mp != NULL) {
+            if (loaded_count)
+                *loaded_count = count;
+            return mp;
+        }
+
+        if (count <= min_count)
+            break;
+
+        count = (count * 3) / 4;
+        if (count < min_count)
+            count = min_count;
+
+        if (loaded_count && *loaded_count == count)
+            break;
+
+        if (loaded_count)
+            *loaded_count = count;
+    }
+
+    pktgen_log_warning("PCAP port %u mbuf pool allocation failed down to minimum %u", pid,
+                       min_count);
+    if (loaded_count)
+        *loaded_count = 0;
+    return NULL;
+}
+
 int
 pktgen_pcap_add(char *filename, uint16_t pid)
 {
@@ -198,11 +241,27 @@ pktgen_pcap_open(void)
         snprintf(name, sizeof(name), "pcap-%d", pid);
         uint32_t dataroom =
             RTE_ALIGN_CEIL(pcap->max_pkt_size + RTE_PKTMBUF_HEADROOM, RTE_CACHE_LINE_SIZE);
-        mp = rte_pktmbuf_pool_create(name, pkt_count, 0, DEFAULT_PRIV_SIZE, dataroom, sid);
+        
+        uint32_t requested_count = pcap->pkt_count; // Start with pkt_count as the requested count
+        uint32_t loaded_count; // Updated by pcap_create_best_effort_pool to reflect actual loaded count
+        uint32_t min_count = (DEFAULT_TX_DESC * 4); // Minimum count to ensure there are enough mbufs for the default Tx descriptor ring size
+
+        // Create a mempool with the requested count, but allow it to be reduced if memory is constrained.
+        loaded_count = 0;
+        mp = pcap_create_best_effort_pool(name, pid, sid, dataroom, requested_count, min_count, &loaded_count);
+
+        // Report mempool creation results
         if (mp == NULL)
             rte_exit(EXIT_FAILURE,
-                     "Cannot create mbuf pool (%s) port %d, nb_mbufs %d, socket_id %d: %s", name,
-                     pid, pcap->pkt_count, sid, rte_strerror(rte_errno));
+                    "Cannot create mbuf pool (%s) port %d, requested up to %u, min %u, socket %d: %s",
+                    name, pid, requested_count, min_count, sid, rte_strerror(rte_errno));
+        
+        if (loaded_count < pcap->pkt_count)
+            pktgen_log_warning("PCAP port %d limited by memory: requested %u packets, loaded %u",
+                                pid, pcap->pkt_count, loaded_count);
+
+        // Keep metadata consistent with what is actually resident in memory.
+        pcap->pkt_count = loaded_count;
 
         pcap->mp = mp;
 
