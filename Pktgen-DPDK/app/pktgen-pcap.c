@@ -137,40 +137,78 @@ mbuf_iterate_cb(struct rte_mempool *mp, void *opaque, void *obj, unsigned obj_id
     m->ol_flags = 0;
 }
 
+/*
+ * Probe if a mempool can be created with the given size
+ */
+static int
+pcap_pool_probe_fit(uint16_t pid, uint16_t sid, uint32_t dataroom, uint32_t count)
+{
+    char probe_name[64] = {0};
+    struct rte_mempool *probe;
+
+    snprintf(probe_name, sizeof(probe_name), "pcap-probe-%u-%u", pid, count);
+
+    probe = rte_pktmbuf_pool_create(probe_name, count, 0, DEFAULT_PRIV_SIZE, dataroom, sid);
+    if (probe == NULL)
+        return 0;
+
+    rte_mempool_free(probe);
+    return 1;
+}
+
+/*
+ * Create a mempool for the given parameters, trying to get as close to the requested count as possible.
+ * If memory constraints prevent creating a mempool with the requested count, it will try smaller sizes down to the specified minimum.
+ */
 static struct rte_mempool *
 pcap_create_best_effort_pool(const char *name, uint16_t pid, uint16_t sid, uint32_t dataroom,
                              uint32_t requested_count, uint32_t min_count,
                              uint32_t *loaded_count)
 {
     struct rte_mempool *mp = NULL;
-    uint32_t count         = requested_count;
+    uint32_t low, high, best, count;
 
     if (loaded_count)
         *loaded_count = 0;
 
-    if (count < min_count)
-        count = min_count;
+    if (requested_count < min_count)
+        requested_count = min_count;
 
-    for (;;) {
-        mp = rte_pktmbuf_pool_create(name, count, 0, DEFAULT_PRIV_SIZE, dataroom, sid);
+    low  = min_count;
+    high = requested_count;
+    best = 0;
+
+    while (low <= high) {
+        count = low + ((high - low) / 2);
+
+        if (pcap_pool_probe_fit(pid, sid, dataroom, count)) {
+            best = count;
+            low  = count + 1;
+        } else {
+            if (count == 0)
+                break;
+            high = count - 1;
+        }
+    }
+
+    /* If binary search found a best candidate, try to allocate it */
+    if (best > 0) {
+        mp = rte_pktmbuf_pool_create(name, best, 0, DEFAULT_PRIV_SIZE, dataroom, sid);
         if (mp != NULL) {
             if (loaded_count)
-                *loaded_count = count;
+                *loaded_count = best;
             return mp;
         }
+    }
 
-        if (count <= min_count)
-            break;
-
-        count = (count * 3) / 4;
-        if (count < min_count)
-            count = min_count;
-
-        if (loaded_count && *loaded_count == count)
-            break;
-
-        if (loaded_count)
-            *loaded_count = count;
+    /* Fallback: try to allocate minimum count as last resort */
+    if (best != min_count) {
+        mp = rte_pktmbuf_pool_create(name, min_count, 0, DEFAULT_PRIV_SIZE, dataroom, sid);
+        if (mp != NULL) {
+            if (loaded_count)
+                *loaded_count = min_count;
+            return mp;
+        }
     }
 
     pktgen_log_warning("PCAP port %u mbuf pool allocation failed down to minimum %u", pid,

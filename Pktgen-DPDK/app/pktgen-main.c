@@ -277,8 +277,7 @@ pktgen_parse_args(int argc, char **argv)
 
     if (l2p_parse_mappings() < 0)
         pktgen_log_error("error or too many mapping entries");
-    if (pktgen_pcap_open() < 0)
-        pktgen_log_error("error opening PCAP files");
+    // pktgen_pcap_open() moved after port config to avoid running out of memory
 
     return ret;
 
@@ -463,6 +462,10 @@ main(int argc, char **argv)
 
     /* Configure and initialize the ports */
     pktgen_config_ports();
+
+    /* Open PCAP files for configured ports */
+    if (pktgen_pcap_open() < 0)
+        pktgen_log_error("error opening PCAP files");
 
     if (pktgen.verbose) {
         pktgen_log_info("");
