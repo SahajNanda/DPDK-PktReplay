@@ -820,6 +820,10 @@ static struct cli_map pcap_map[] = {
     {20, "pcap show"},
     {21, "pcap show all"},
     {30, "pcap filter %P %s"},
+    {40, "pcap reload %P %s"},
+    {41, "pcap reload %P %s %d"},
+    {42, "pcap reload %P %s add %d"},
+    {43, "pcap reload %P %s %d add %d"},
     {-1, NULL}
 };
 // clang-format on
@@ -830,6 +834,12 @@ static const char *pcap_help[] = {
     "pcap <index>                       - Move the PCAP file index to the given packet number,\n   "
     "    0 - rewind, -1 - end of file",
     "pcap filter <portlist> <string>    - PCAP filter string to filter packets on receive",
+    "pcap reload <portlist> <filename>  - Reload a different PCAP file on specified port(s)",
+    "pcap reload <portlist> <filename> <start_pkt> - Reload PCAP starting from packet index",
+    "pcap reload <portlist> <filename> add <count> - Reload PCAP with exact target packet "
+    "count",
+    "pcap reload <portlist> <filename> <start_pkt> add <count> - Same as above with start "
+    "packet index",
     CLI_HELP_PAUSE,
     NULL};
 
@@ -839,6 +849,7 @@ pcap_cmd(int argc, char **argv)
     struct cli_map *m;
     pcap_info_t *pcap;
     uint32_t max_cnt;
+    uint32_t start_pkt;
     uint32_t value;
     portlist_t portlist;
     port_info_t *pinfo;
@@ -880,6 +891,26 @@ pcap_cmd(int argc, char **argv)
     case 30:
         portlist_parse(argv[2], pktgen.nb_ports, &portlist);
         foreach_port(portlist, pcap_filter(pinfo, argv[3]));
+        break;
+    case 40:
+        portlist_parse(argv[2], pktgen.nb_ports, &portlist);
+        foreach_port(portlist, pktgen_pcap_reload(pid, argv[3]));
+        break;
+    case 41:
+        value = strtoul(argv[4], NULL, 10);
+        portlist_parse(argv[2], pktgen.nb_ports, &portlist);
+        foreach_port(portlist, pktgen_pcap_reload_from(pid, argv[3], value));
+        break;
+    case 42:
+        value = strtoul(argv[5], NULL, 10);
+        portlist_parse(argv[2], pktgen.nb_ports, &portlist);
+        foreach_port(portlist, pktgen_pcap_reload_with_opts(pid, argv[3], 0, value));
+        break;
+    case 43:
+        start_pkt = strtoul(argv[4], NULL, 10);
+        value = strtoul(argv[6], NULL, 10);
+        portlist_parse(argv[2], pktgen.nb_ports, &portlist);
+        foreach_port(portlist, pktgen_pcap_reload_with_opts(pid, argv[3], start_pkt, value));
         break;
     default:
         return cli_cmd_error("PCAP command invalid", "PCAP", argc, argv);

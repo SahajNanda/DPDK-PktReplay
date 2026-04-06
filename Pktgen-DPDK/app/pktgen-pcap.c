@@ -6,6 +6,7 @@
 /* Created 2010 by Keith Wiles @ intel.com */
 
 #include <lua_config.h>
+#include <errno.h>
 
 #include "pktgen-display.h"
 #include "pktgen-log.h"
@@ -53,6 +54,23 @@ pcap_rewind(pcap_info_t *pcap)
 
     /* Seek past the pcap header */
     (void)fseek(pcap->fp, sizeof(pcap_hdr_t), SEEK_SET);
+}
+
+static int
+pcap_skip_packets(pcap_info_t *pcap, uint32_t start_pkt)
+{
+    pcap_record_hdr_t hdr;
+
+    for (uint32_t i = 0; i < start_pkt; i++) {
+        if (fread(&hdr, 1, sizeof(hdr), pcap->fp) != sizeof(hdr))
+            return -1;
+
+        pcap_convert(pcap, &hdr);
+        if (fseek(pcap->fp, hdr.incl_len, SEEK_CUR) < 0)
+            return -1;
+    }
+
+    return 0;
 }
 
 static void
@@ -138,27 +156,10 @@ mbuf_iterate_cb(struct rte_mempool *mp, void *opaque, void *obj, unsigned obj_id
 }
 
 /*
- * Probe if a mempool can be created with the given size
- */
-static int
-pcap_pool_probe_fit(uint16_t pid, uint16_t sid, uint32_t dataroom, uint32_t count)
-{
-    char probe_name[64] = {0};
-    struct rte_mempool *probe;
-
-    snprintf(probe_name, sizeof(probe_name), "pcap-probe-%u-%u", pid, count);
-
-    probe = rte_pktmbuf_pool_create(probe_name, count, 0, DEFAULT_PRIV_SIZE, dataroom, sid);
-    if (probe == NULL)
-        return 0;
-
-    rte_mempool_free(probe);
-    return 1;
-}
-
-/*
- * Create a mempool for the given parameters, trying to get as close to the requested count as possible.
- * If memory constraints prevent creating a mempool with the requested count, it will try smaller sizes down to the specified minimum.
+ * Create a mempool for the given parameters.
+ * First tries to allocate the requested count directly.
+ * If that fails, performs up to 8 binary-search attempts between requested and min.
+ * If binary search also fails, falls back to minimum count.
  */
 static struct rte_mempool *
 pcap_create_best_effort_pool(const char *name, uint16_t pid, uint16_t sid, uint32_t dataroom,
@@ -166,7 +167,9 @@ pcap_create_best_effort_pool(const char *name, uint16_t pid, uint16_t sid, uint3
                              uint32_t *loaded_count)
 {
     struct rte_mempool *mp = NULL;
-    uint32_t low, high, best, count;
+    uint32_t low, high, best;
+    uint32_t attempt = 0;
+    const uint32_t max_attempts = 8;
 
     if (loaded_count)
         *loaded_count = 0;
@@ -174,14 +177,30 @@ pcap_create_best_effort_pool(const char *name, uint16_t pid, uint16_t sid, uint3
     if (requested_count < min_count)
         requested_count = min_count;
 
+    /* Try to allocate the full requested count first */
+    mp = rte_pktmbuf_pool_create(name, requested_count, 0, DEFAULT_PRIV_SIZE, dataroom, sid);
+    if (mp != NULL) {
+        if (loaded_count)
+            *loaded_count = requested_count;
+        return mp;
+    }
+
+    /* Full request failed, start binary search between requested and min */
     low  = min_count;
     high = requested_count;
     best = 0;
+    attempt = 0;
 
-    while (low <= high) {
-        count = low + ((high - low) / 2);
+    while (low <= high && attempt < max_attempts) {
+        uint32_t count = low + ((high - low) / 2);
+        char try_name[64] = {0};
 
-        if (pcap_pool_probe_fit(pid, sid, dataroom, count)) {
+        snprintf(try_name, sizeof(try_name), "pcap-bin-%u-%u-%u", pid, attempt, count);
+        mp = rte_pktmbuf_pool_create(try_name, count, 0, DEFAULT_PRIV_SIZE, dataroom, sid);
+
+        if (mp != NULL) {
+            rte_mempool_free(mp);
+            mp   = NULL;
             best = count;
             low  = count + 1;
         } else {
@@ -189,9 +208,11 @@ pcap_create_best_effort_pool(const char *name, uint16_t pid, uint16_t sid, uint3
                 break;
             high = count - 1;
         }
+
+        attempt++;
     }
 
-    /* If binary search found a best candidate, try to allocate it */
+    /* Allocate the best successful size found by binary search. */
     if (best > 0) {
         mp = rte_pktmbuf_pool_create(name, best, 0, DEFAULT_PRIV_SIZE, dataroom, sid);
         if (mp != NULL) {
@@ -201,7 +222,7 @@ pcap_create_best_effort_pool(const char *name, uint16_t pid, uint16_t sid, uint3
         }
     }
 
-    /* Fallback: try to allocate minimum count as last resort */
+    /* Fallback: try to allocate minimum count as last resort. */
     if (best != min_count) {
         mp = rte_pktmbuf_pool_create(name, min_count, 0, DEFAULT_PRIV_SIZE, dataroom, sid);
         if (mp != NULL) {
@@ -244,70 +265,206 @@ pktgen_pcap_add(char *filename, uint16_t pid)
     return 0;
 }
 
-int
-pktgen_pcap_open(void)
+/**
+ * Open a single port's PCAP file and load packets into mempool.
+ *
+ * @param pid Port ID to open PCAP for.
+ * @param start_pkt Packet index to start from.
+ * @return 0 on success, negative on error.
+ */
+static int
+pktgen_pcap_open_port(uint16_t pid, uint32_t start_pkt, uint32_t add_pkt_count)
 {
     pcap_info_t *pcap = NULL;
     struct rte_mempool *mp;
     char name[64] = {0};
     uint16_t sid;
-    uint32_t pkt_count;
+    uint32_t requested_count;
+    uint32_t loaded_count;
+    uint32_t file_pkt_count;
+    uint32_t min_count;
+    uint32_t dataroom;
+
+    if ((pcap = pcap_info_list[pid]) == NULL)
+        return -ENOENT;
+
+    sid = pg_eth_dev_socket_id(pid);
+
+    pcap->fp = fopen((const char *)pcap->filename, "r");
+    if (pcap->fp == NULL) {
+        pktgen_log_error("%s: failed to open file (%s)", __func__, pcap->filename);
+        return -ENOENT;
+    }
+
+    pcap->pkt_count = 0;
+    pcap_get_info(pcap);
+
+    file_pkt_count  = pcap->pkt_count;
+    requested_count = file_pkt_count;
+    loaded_count    = 0;
+    min_count       = (DEFAULT_TX_DESC * 4);
+
+    if (requested_count == 0) {
+        fclose(pcap->fp);
+        pcap->fp = NULL;
+        pktgen_log_error("%s: PCAP file is empty: %s", __func__, pcap->filename);
+        return -ENODATA;
+    }
+
+    if (start_pkt >= file_pkt_count) {
+        start_pkt %= file_pkt_count;
+        pktgen_log_warning("PCAP start packet adjusted to %u on port %u", start_pkt, pid);
+    }
+
+    pcap_rewind(pcap);
+    if (start_pkt > 0 && pcap_skip_packets(pcap, start_pkt) < 0) {
+        fclose(pcap->fp);
+        pcap->fp = NULL;
+        pktgen_log_error("%s: failed to seek to packet %u in %s", __func__, start_pkt,
+                         pcap->filename);
+        return -EINVAL;
+    }
+
+    pcap->pkt_index = start_pkt;
+
+    snprintf(name, sizeof(name), "pcap-%d", pid);
+    dataroom = RTE_ALIGN_CEIL(pcap->max_pkt_size + RTE_PKTMBUF_HEADROOM, RTE_CACHE_LINE_SIZE);
+
+    if (add_pkt_count > 0) {
+        /* Explicit mode: caller provides exact target packet count. */
+        requested_count = add_pkt_count;
+        mp = rte_pktmbuf_pool_create(name, requested_count, 0, DEFAULT_PRIV_SIZE, dataroom, sid);
+        if (mp != NULL)
+            loaded_count = requested_count;
+    } else {
+        mp = pcap_create_best_effort_pool(name, pid, sid, dataroom, requested_count, min_count,
+                                          &loaded_count);
+    }
+
+    if (mp == NULL) {
+        fclose(pcap->fp);
+        pcap->fp = NULL;
+        if (add_pkt_count > 0)
+            pktgen_log_error("Cannot create mbuf pool (%s) port %d, exact request %u, socket %d: %s",
+                             name, pid, requested_count, sid, rte_strerror(rte_errno));
+        else
+            pktgen_log_error(
+                "Cannot create mbuf pool (%s) port %d, requested up to %u, min %u, socket %d: %s",
+                name, pid, requested_count, min_count, sid, rte_strerror(rte_errno));
+        return -rte_errno;
+    }
+
+    if ((add_pkt_count == 0) && (loaded_count < file_pkt_count))
+        pktgen_log_warning("PCAP port %d limited by memory: requested %u packets, loaded %u", pid,
+                           file_pkt_count, loaded_count);
+
+    pcap->pkt_count = loaded_count;
+    pcap->mp        = mp;
+
+    rte_mempool_obj_iter(mp, mbuf_iterate_cb, pcap);
+
+    if (l2p_set_pcap_info(pid, pcap) < 0) {
+        rte_mempool_free(mp);
+        pcap->mp = NULL;
+        fclose(pcap->fp);
+        pcap->fp = NULL;
+        pktgen_log_error("Error opening PCAP file: %s", pcap->filename);
+        return -1;
+    }
+
+    return 0;
+}
+
+int
+pktgen_pcap_open(void)
+{
+    int ret;
 
     for (int pid = 0; pid < RTE_MAX_ETHPORTS; pid++) {
-        if ((pcap = pcap_info_list[pid]) == NULL)
+        if (pcap_info_list[pid] == NULL)
             continue;
 
-        pcap = pcap_info_list[pid];
-
-        sid = pg_eth_dev_socket_id(pid);
-
-        /* Read the pcap file trailer. */
-        pcap->fp = fopen((const char *)pcap->filename, "r");
-        if (pcap->fp == NULL)
-            rte_exit(EXIT_FAILURE, "%s: failed for (%s)\n", __func__, pcap->filename);
-
-        pcap_get_info(pcap);
-
-        pkt_count = pcap->pkt_count;
-        if (pkt_count == 0) {
-            fclose(pcap->fp);
-            rte_exit(EXIT_FAILURE, "%s: PCAP file is empty: %s\n", __func__, pcap->filename);
-        }
-        if (pkt_count < (DEFAULT_TX_DESC * 4))
-            pkt_count = (DEFAULT_TX_DESC * 4);
-
-        snprintf(name, sizeof(name), "pcap-%d", pid);
-        uint32_t dataroom =
-            RTE_ALIGN_CEIL(pcap->max_pkt_size + RTE_PKTMBUF_HEADROOM, RTE_CACHE_LINE_SIZE);
-        
-        uint32_t requested_count = pcap->pkt_count; // Start with pkt_count as the requested count
-        uint32_t loaded_count; // Updated by pcap_create_best_effort_pool to reflect actual loaded count
-        uint32_t min_count = (DEFAULT_TX_DESC * 4); // Minimum count to ensure there are enough mbufs for the default Tx descriptor ring size
-
-        // Create a mempool with the requested count, but allow it to be reduced if memory is constrained.
-        loaded_count = 0;
-        mp = pcap_create_best_effort_pool(name, pid, sid, dataroom, requested_count, min_count, &loaded_count);
-
-        // Report mempool creation results
-        if (mp == NULL)
-            rte_exit(EXIT_FAILURE,
-                    "Cannot create mbuf pool (%s) port %d, requested up to %u, min %u, socket %d: %s",
-                    name, pid, requested_count, min_count, sid, rte_strerror(rte_errno));
-        
-        if (loaded_count < pcap->pkt_count)
-            pktgen_log_warning("PCAP port %d limited by memory: requested %u packets, loaded %u",
-                                pid, pcap->pkt_count, loaded_count);
-
-        // Keep metadata consistent with what is actually resident in memory.
-        pcap->pkt_count = loaded_count;
-
-        pcap->mp = mp;
-
-        rte_mempool_obj_iter(mp, mbuf_iterate_cb, pcap);
-
-        if (l2p_set_pcap_info(pid, pcap) < 0)
-            pktgen_log_error("Error opening PCAP file: %s", pcap->filename);
+        ret = pktgen_pcap_open_port(pid, 0, 0);
+        if (ret < 0)
+            rte_exit(EXIT_FAILURE, "Failed to open PCAP on port %d\n", pid);
     }
+    return 0;
+}
+
+int
+pktgen_pcap_reload(uint16_t pid, const char *filename)
+{
+    return pktgen_pcap_reload_with_opts(pid, filename, 0, 0);
+}
+
+int
+pktgen_pcap_reload_from(uint16_t pid, const char *filename, uint32_t start_pkt)
+{
+    return pktgen_pcap_reload_with_opts(pid, filename, start_pkt, 0);
+}
+
+int
+pktgen_pcap_reload_with_opts(uint16_t pid, const char *filename, uint32_t start_pkt,
+                             uint32_t add_pkt_count)
+{
+    pcap_info_t *pcap;
+    port_info_t *pinfo;
+    int ret;
+
+    if (pid >= RTE_MAX_ETHPORTS) {
+        pktgen_log_error("Invalid port ID %u", pid);
+        return -EINVAL;
+    }
+
+    pcap = pcap_info_list[pid];
+    if (pcap == NULL) {
+        pktgen_log_error("No PCAP loaded on port %u", pid);
+        return -ENOENT;
+    }
+
+    if (filename == NULL) {
+        pktgen_log_error("Filename is NULL");
+        return -EINVAL;
+    }
+
+    pinfo = l2p_get_port_pinfo(pid);
+    if (pinfo && pktgen_tst_port_flags(pinfo, SENDING_PACKETS)) {
+        pktgen_log_error("Cannot reload PCAP on port %u while transmitting", pid);
+        return -EBUSY;
+    }
+
+    if (pcap->fp) {
+        fclose(pcap->fp);
+        pcap->fp = NULL;
+    }
+    if (pcap->mp) {
+        rte_mempool_free(pcap->mp);
+        pcap->mp = NULL;
+    }
+    if (pcap->filename)
+        free(pcap->filename);
+
+    pcap->filename = strdup(filename);
+    if (pcap->filename == NULL) {
+        pktgen_log_error("Failed to allocate memory for filename");
+        return -ENOMEM;
+    }
+
+    pcap->pkt_index = 0;
+    pcap->pkt_count = 0;
+
+    ret = pktgen_pcap_open_port(pid, start_pkt, add_pkt_count);
+    if (ret < 0) {
+        pktgen_log_error("Failed to open new PCAP file on port %u: %s", pid, filename);
+        return ret;
+    }
+
+    if (add_pkt_count > 0)
+        pktgen_log_info("PCAP reloaded on port %u: %s (start packet %u, target packets %u)", pid,
+                        filename, start_pkt, add_pkt_count);
+    else
+        pktgen_log_info("PCAP reloaded on port %u: %s (start packet %u)", pid, filename,
+                        start_pkt);
     return 0;
 }
 

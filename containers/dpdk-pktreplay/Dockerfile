@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     meson \
     ninja-build \
     python3-pyelftools \
+    liblua5.4-dev \
     libnuma-dev \
     libpcap-dev \
     libbsd-dev \
@@ -17,6 +18,8 @@ RUN apt-get update && apt-get install -y \
     git \
     iproute2 \
     pciutils \
+    tcpdump \
+    tshark \
     && rm -rf /var/lib/apt/lists/*
 
 # Set compiler path for DPDK (for Pktgen)
@@ -54,7 +57,7 @@ COPY Pktgen-DPDK /DPDK-PktReplay/Pktgen-DPDK
 WORKDIR /DPDK-PktReplay/Pktgen-DPDK
 
 # Build and Install Pktgen
-RUN meson setup builddir \
+RUN meson setup builddir -Denable_lua=true \
     && meson compile -C builddir \
     && meson install -C builddir \
     && ldconfig

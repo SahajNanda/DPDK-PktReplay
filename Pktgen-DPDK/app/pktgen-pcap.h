@@ -80,6 +80,44 @@ int pktgen_pcap_add(char *filename, uint16_t port);
  */
 int pktgen_pcap_open(void);
 
+/**
+ * Reload a PCAP file on a port starting from packet index 0.
+ *
+ * @param pid       Port ID.
+ * @param filename  Path to replacement PCAP file.
+ * @return
+ *   0 on success, negative on error.
+ */
+int pktgen_pcap_reload(uint16_t pid, const char *filename);
+
+/**
+ * Reload a PCAP file on a port starting from a specific packet index.
+ *
+ * @param pid        Port ID.
+ * @param filename   Path to replacement PCAP file.
+ * @param start_pkt  Packet index to start replay from.
+ * @return
+ *   0 on success, negative on error.
+ */
+int pktgen_pcap_reload_from(uint16_t pid, const char *filename, uint32_t start_pkt);
+
+/**
+ * Reload a PCAP file with explicit additional packet allocation.
+ *
+ * Requests an exact pool size of: packets_in_file + add_pkt_count. When
+ * add_pkt_count is non-zero, this path skips best-effort probing and performs
+ * a single allocation attempt for deterministic sizing.
+ *
+ * @param pid            Port ID.
+ * @param filename       Path to replacement PCAP file.
+ * @param start_pkt      Packet index to start replay from.
+ * @param add_pkt_count  Extra packets to allocate beyond file packet count.
+ * @return
+ *   0 on success, negative on error.
+ */
+int pktgen_pcap_reload_with_opts(uint16_t pid, const char *filename, uint32_t start_pkt,
+                                 uint32_t add_pkt_count);
+
 /** Close all open PCAP file handles. */
 void pktgen_pcap_close(void);
 
