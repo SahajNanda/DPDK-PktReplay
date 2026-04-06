@@ -5,7 +5,8 @@ A project built on DPDK + Pktgen to enable continuous packet transmission of lar
 ## Quick Start
 - In WSL in this folder, run `./start.sh [-p|--hugepages COUNT]` to build image and allocate hugepages (each page is 2048 kB, default 1024 pages)
 - Run `./start.sh [-p|--hugepages COUNT] [s|sender|r|receiver|d|debug|a|allocate]` to run container or change hugepages allocation
-- Once container is open, run `./start.sh [s|sender|r|receiver]`
+- Once container is open, run `./start.sh [s|sender] [INPUT_PCAP_FILE]` or `./start.sh [r|receiver]`
+- For Lua script mode inside container, from the Pktgen-DPDK folder run `./builddir/app/pktgen -l 0-2 -n 4 --vdev=net_pcap0,iface=veth1 -- -m [1:2].0 -s 0:[INPUT_PCAP_FILE] -f [LUA_SCRIPT_FILE]`
 
 ## Structure Overview
 

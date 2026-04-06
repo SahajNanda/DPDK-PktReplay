@@ -100,7 +100,7 @@ run_container() {
 
 	remove_if_exists "${container_name}"
 
-	docker run -it --privileged \
+	docker run -it --rm --privileged \
 		--name "${container_name}" \
 		--network host \
 		-v /dev/hugepages:/dev/hugepages \
