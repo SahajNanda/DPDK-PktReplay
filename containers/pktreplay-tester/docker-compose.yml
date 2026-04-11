@@ -1,0 +1,31 @@
+name: pktreplay
+
+x-pktreplay-common: &pktreplay-common
+  build:
+    context: ../..
+    dockerfile: containers/pktreplay-tester/Dockerfile
+  command: ["sleep", "infinity"]
+  stdin_open: true
+  tty: true
+  network_mode: host
+  privileged: true
+
+services:
+  sender:
+    <<: *pktreplay-common
+    container_name: sender
+    volumes:
+      - /dev/hugepages:/dev/hugepages
+      - /lib/modules:/lib/modules
+      - ../../Pktgen-DPDK:/DPDK-PktReplay/Pktgen-DPDK
+      - ../../data:/DPDK-PktReplay/data
+      - ./scripts/sender:/DPDK-PktReplay/scripts
+      - ./scripts/veth-setup.sh:/DPDK-PktReplay/veth-setup.sh
+  receiver:
+    <<: *pktreplay-common
+    container_name: receiver
+    volumes:
+      - /dev/hugepages:/dev/hugepages
+      - /lib/modules:/lib/modules
+      - ./scripts/receiver:/DPDK-PktReplay/scripts
+      - ./scripts/veth-setup.sh:/DPDK-PktReplay/veth-setup.sh

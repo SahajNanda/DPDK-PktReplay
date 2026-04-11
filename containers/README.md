@@ -10,7 +10,7 @@
 
 - To run sender container: 
 ```bash
-docker run -it --privileged \
+docker run -it --rm --privileged \
 --name sender \
 --network host \
 -v /dev/hugepages:/dev/hugepages \
@@ -20,7 +20,7 @@ dpdk-pktreplay /bin/bash
 
 - To run receiver container: 
 ```bash
-docker run -it --privileged \
+docker run -it --rm --privileged \
 --name receiver \
 --network host \
 -v /dev/hugepages:/dev/hugepages \
