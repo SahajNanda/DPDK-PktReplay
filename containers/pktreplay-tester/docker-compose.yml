@@ -15,8 +15,8 @@ services:
     <<: *pktreplay-common
     container_name: sender
     volumes:
-      - /dev/hugepages:/dev/hugepages
       - /lib/modules:/lib/modules
+      - /dev/hugepages:/dev/hugepages
       - ../../Pktgen-DPDK:/DPDK-PktReplay/Pktgen-DPDK
       - ../../data:/DPDK-PktReplay/data
       - ./scripts/sender:/DPDK-PktReplay/scripts
@@ -25,7 +25,8 @@ services:
     <<: *pktreplay-common
     container_name: receiver
     volumes:
-      - /dev/hugepages:/dev/hugepages
       - /lib/modules:/lib/modules
+      - /dev/hugepages:/dev/hugepages
+      - ../../data/captures:/DPDK-PktReplay/captures
       - ./scripts/receiver:/DPDK-PktReplay/scripts
       - ./scripts/veth-setup.sh:/DPDK-PktReplay/veth-setup.sh

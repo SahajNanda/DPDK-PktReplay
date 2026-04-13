@@ -11,4 +11,5 @@ cd "$PKTGEN_DIR"
 	--vdev=net_pcap0,iface=veth0 \
 	-- \
 	-Tv \
-	-m [1:2].0
+	-m [1:2].0 \
+	-s 0:pcap/test5.pcap\

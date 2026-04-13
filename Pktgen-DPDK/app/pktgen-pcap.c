@@ -18,6 +18,44 @@
 
 static pcap_info_t *pcap_info_list[RTE_MAX_ETHPORTS];
 
+#define DEFAULT_PKTGEN_BASELINE_HUGEPAGES 100
+
+static int
+get_total_hugepage_bytes(uint64_t *bytes, uint64_t *hugepage_size_bytes)
+{
+    FILE *fp;
+    char line[256];
+    uint64_t hugepages_total = 0;
+    uint64_t hugepage_size_kb = 0;
+
+    if (bytes == NULL)
+        return -1;
+
+    fp = fopen("/proc/meminfo", "r");
+    if (fp == NULL)
+        return -1;
+
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        if (sscanf(line, "HugePages_Total: %lu", &hugepages_total) == 1)
+            continue;
+        if (sscanf(line, "Hugepagesize: %lu kB", &hugepage_size_kb) == 1)
+            continue;
+    }
+
+    fclose(fp);
+
+    if (hugepages_total == 0 || hugepage_size_kb == 0)
+        return -1;
+
+    *bytes = hugepages_total * hugepage_size_kb * 1024ULL;
+    if (hugepage_size_bytes != NULL)
+        *hugepage_size_bytes = hugepage_size_kb * 1024ULL;
+
+    pktgen_log_info("HugePages_Total bytes calculated: %lu", (unsigned long)*bytes); // remove
+
+    return 0;
+}
+
 void
 pktgen_pcap_info(pcap_info_t *pcap, uint16_t port, int flag)
 {
@@ -171,6 +209,11 @@ pktgen_pcap_open(void)
     char name[64] = {0};
     uint16_t sid;
     uint32_t pkt_count;
+    uint64_t total_hugepage_bytes = 0;
+    uint64_t hugepage_size_bytes = 0;
+    int have_hugepage_info;
+
+    have_hugepage_info = get_total_hugepage_bytes(&total_hugepage_bytes, &hugepage_size_bytes);
 
     for (int pid = 0; pid < RTE_MAX_ETHPORTS; pid++) {
         if ((pcap = pcap_info_list[pid]) == NULL)
@@ -198,6 +241,46 @@ pktgen_pcap_open(void)
         snprintf(name, sizeof(name), "pcap-%d", pid);
         uint32_t dataroom =
             RTE_ALIGN_CEIL(pcap->max_pkt_size + RTE_PKTMBUF_HEADROOM, RTE_CACHE_LINE_SIZE);
+        pktgen_log_info("PCAP port %d: dataroom bytes calculated: %u", pid, dataroom); // remove
+
+        if (have_hugepage_info == 0) {
+            uint64_t reserve_hugepage_bytes =
+                (uint64_t)DEFAULT_PKTGEN_BASELINE_HUGEPAGES * hugepage_size_bytes;
+            uint64_t available_hugepage_bytes = 0;
+            uint64_t per_pkt_bytes =
+                RTE_ALIGN_CEIL(sizeof(struct rte_mbuf) + DEFAULT_PRIV_SIZE + dataroom,
+                               RTE_CACHE_LINE_SIZE) + 32; // align to cache line size and account for potential mbuf overhead
+            pktgen_log_info("PCAP port %d per_pkt_bytes calc: sizeof(rte_mbuf)=%zu "
+                            "priv=%u dataroom=%u cache_line=%u result=%lu",
+                            pid, sizeof(struct rte_mbuf), (unsigned)DEFAULT_PRIV_SIZE,
+                            dataroom, (unsigned)RTE_CACHE_LINE_SIZE, per_pkt_bytes); // remove
+            uint32_t max_pkts_fit = 0;
+
+            if (total_hugepage_bytes > reserve_hugepage_bytes)
+                available_hugepage_bytes = total_hugepage_bytes - reserve_hugepage_bytes;
+
+            if (per_pkt_bytes > 0)
+                max_pkts_fit = (uint32_t)(available_hugepage_bytes / per_pkt_bytes);
+
+            if (max_pkts_fit == 0)
+                rte_exit(EXIT_FAILURE,
+                         "%s: not enough hugepage memory for PCAP port %d "
+                         "(total=%lu bytes, reserved baseline=%lu pages)",
+                         __func__, pid, total_hugepage_bytes,
+                         (uint64_t)DEFAULT_PKTGEN_BASELINE_HUGEPAGES);
+
+            if (pkt_count > max_pkts_fit) {
+                pktgen_log_info("PCAP port %d: reducing pkt_count from %u to %u to fit total "
+                                "hugepages",
+                                pid, pkt_count, max_pkts_fit);
+                pkt_count = max_pkts_fit;
+            }
+        } else {
+            pktgen_log_info("PCAP port %d: unable to read total hugepage info, keeping pkt_count "
+                            "at %u",
+                            pid, pkt_count);
+        }
+
         mp = rte_pktmbuf_pool_create(name, pkt_count, 0, DEFAULT_PRIV_SIZE, dataroom, sid);
         if (mp == NULL)
             rte_exit(EXIT_FAILURE,
