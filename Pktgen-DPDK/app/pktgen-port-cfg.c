@@ -431,7 +431,7 @@ _device_mtu(port_info_t *pinfo)
     conf->rxmode.mtu = max_mtu;
 
     if ((ret = rte_eth_dev_set_mtu(pinfo->pid, pinfo->max_mtu)) < 0)
-        pktgen_log_panic("Cannot set MTU on port %u, (%d)%s", pinfo->pid, -ret, rte_strerror(-ret));
+        pktgen_log_warning("Unable to set MTU on port %u, (%d)%s (device may not support MTU configuration)", pinfo->pid, -ret, rte_strerror(-ret));
 }
 
 static void
