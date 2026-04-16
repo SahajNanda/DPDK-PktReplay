@@ -34,6 +34,9 @@ typedef struct pcap_section_s {
     uint32_t pkt_count;     /**< Number of packets allocated in this section */
     uint32_t pkt_loaded;    /**< Number of packets loaded into this section */
     uint64_t budget_bytes;  /**< Hugepage budget assigned to this section */
+    uint64_t chunk_id;      /**< Chunk sequence number loaded into this section */
+    long file_offset_begin; /**< File offset before section load starts */
+    long file_offset_end;   /**< File offset after section load completes */
 } pcap_section_t;
 
 /** PCAP global file header. */
@@ -61,11 +64,13 @@ typedef struct pcap_info_s {
     FILE *fp;                        /**< file pointer for pcap file */
     struct rte_mempool *mp;          /**< Mempool for storing packets */
     pcap_section_t sections[PCAP_NUM_SECTIONS]; /**< Two replay sections */
+    uint8_t active_section_idx;      /**< Section currently selected for transmit */
     uint32_t convert;                /**< Endian flag value if 1 convert to host endian format */
     uint32_t max_pkt_size;           /**< largest packet found in pcap file */
     uint32_t avg_pkt_size;           /**< average packet size in pcap file */
     uint32_t pkt_count;              /**< Number of packets in pcap file */
     uint32_t pkt_index;              /**< Index of current packet in pcap file */
+    uint64_t next_chunk_id;          /**< Next chunk ID to assign during section load */
     pcap_hdr_t info;                 /**< information on the PCAP file */
     int32_t pcap_result;             /**< PCAP result of filter compile */
     struct bpf_program pcap_program; /**< PCAP filter program structure */

@@ -929,6 +929,23 @@ pktgen_send_pkts(port_info_t *pinfo, uint16_t qid, struct rte_mempool *mp)
 {
     uint64_t txCnt;
     struct rte_mbuf **pkts = pinfo->per_queue[qid].tx_pkts;
+    pcap_info_t *pcap       = NULL;
+
+    if (pktgen_tst_port_flags(pinfo, SEND_PCAP_PKTS)) { // Check if sending pcap packets
+        pcap = l2p_get_pcap(pinfo->pid); // Get pcap info for the port
+        if (pcap != NULL) {
+            uint8_t idx = pcap->active_section_idx; // Get the active section index
+            uint8_t next_idx          = (idx + 1) % PCAP_NUM_SECTIONS; // Set the next section index
+
+            // Check if current section done sending and next section loaded
+            if (idx < PCAP_NUM_SECTIONS && pcap->pkt_index >= pcap->sections[idx].pkt_loaded &&
+                pcap->sections[next_idx].pkt_loaded > 0) {
+                pcap->active_section_idx = next_idx; // Move to the next section
+                pcap->pkt_index          = 0; // Reset packet index for the new section
+                mp                       = l2p_get_pcap_mp(pinfo->pid); // Update mempool to the new section's mempool
+            }
+        }
+    }
 
     if (!pktgen_tst_port_flags(pinfo, SEND_FOREVER)) {
         txCnt = pkt_atomic64_tx_count(&pinfo->current_tx_count, pinfo->tx_burst);
@@ -941,8 +958,11 @@ pktgen_send_pkts(port_info_t *pinfo, uint16_t qid, struct rte_mempool *mp)
     } else
         txCnt = pinfo->tx_burst;
 
-    if (rte_mempool_get_bulk(mp, (void **)pkts, txCnt) == 0)
+    if (rte_mempool_get_bulk(mp, (void **)pkts, txCnt) == 0) {
         tx_send_packets(pinfo, qid, pkts, txCnt);
+        if (pcap != NULL && qid == 0) // Only update packet index for the first queue
+            pcap->pkt_index += txCnt; // Update packet index after sending
+    }
 }
 
 /**

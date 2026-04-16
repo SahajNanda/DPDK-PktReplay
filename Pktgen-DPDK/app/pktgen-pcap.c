@@ -102,8 +102,11 @@ pcap_load_section(pcap_info_t *pcap, pcap_section_t *section)
     if (pcap == NULL || section == NULL || section->mp == NULL)
         return;
 
+    section->file_offset_begin = ftell(pcap->fp); // record the beginning offset for this section load
+    section->chunk_id          = pcap->next_chunk_id++; // assign a chunk ID for this section
     pcap_section_reset(section); // reset the loaded packet count for this section before loading
     rte_mempool_obj_iter(section->mp, mbuf_iterate_cb, pcap); // iterate over all mbufs in the mempool and load packets from the pcap file into them
+    section->file_offset_end = ftell(pcap->fp); // record the end offset for this section load
 } // load packets into a section
 
 void
@@ -119,13 +122,20 @@ pktgen_pcap_info(pcap_info_t *pcap, uint16_t port, int flag)
     printf(" Convert Endian: %s\n", pcap->convert ? "Yes" : "No");
     if (flag) {
         printf("  Packet count: %d, max size %d\n", pcap->pkt_count, pcap->max_pkt_size);
-        // print section load status and budgets
+        // print section information
         printf("  Section 0: loaded %u / %u, budget %lu bytes\n",
                pcap->sections[0].pkt_loaded, pcap->sections[0].pkt_count,
                (unsigned long)pcap->sections[0].budget_bytes);
+        printf("             chunk: %lu\n", (unsigned long)pcap->sections[0].chunk_id);
+         printf("             offsets: %ld -> %ld\n", pcap->sections[0].file_offset_begin,
+             pcap->sections[0].file_offset_end);
         printf("  Section 1: loaded %u / %u, budget %lu bytes\n",
                pcap->sections[1].pkt_loaded, pcap->sections[1].pkt_count,
                (unsigned long)pcap->sections[1].budget_bytes);
+        printf("             chunk: %lu\n", (unsigned long)pcap->sections[1].chunk_id);
+        printf("             offsets: %ld -> %ld\n", pcap->sections[1].file_offset_begin,
+            pcap->sections[1].file_offset_end);
+        printf("TEST\n");
     }
     fflush(stdout);
 }
@@ -260,6 +270,8 @@ pktgen_pcap_add(char *filename, uint16_t pid)
 
     /* Default to little endian format. */
     pcap->filename = strdup(filename);
+    pcap->active_section_idx = 0; // start with section 0 as the active section
+    pcap->next_chunk_id = 1; // initialize the next chunk ID to 1
 
     pcap_info_list[pid] = pcap;
 
