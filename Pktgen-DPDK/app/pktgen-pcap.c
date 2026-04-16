@@ -56,6 +56,56 @@ get_total_hugepage_bytes(uint64_t *bytes, uint64_t *hugepage_size_bytes)
     return 0;
 }
 
+static uint64_t
+pcap_split_section_budgets(uint64_t total_hugepage_bytes, uint64_t reserve_hugepage_bytes,
+                           uint64_t *section0_bytes, uint64_t *section1_bytes)
+{
+    uint64_t usable_hugepage_bytes = 0;
+
+    if (total_hugepage_bytes > reserve_hugepage_bytes)
+        usable_hugepage_bytes = total_hugepage_bytes - reserve_hugepage_bytes;
+
+    *section0_bytes = usable_hugepage_bytes / 2;
+    *section1_bytes = usable_hugepage_bytes - *section0_bytes;
+
+    return usable_hugepage_bytes;
+} // splite hugepage budget across two sections
+
+static __inline__ void
+pcap_section_reset(pcap_section_t *section)
+{
+    if (section != NULL)
+        section->pkt_loaded = 0;
+} // reset the loaded packet count for a section
+
+static __inline__ pcap_section_t *
+pcap_section_from_mp(pcap_info_t *pcap, struct rte_mempool *mp)
+{
+    if (pcap == NULL || mp == NULL)
+        return NULL;
+
+    if (mp == pcap->sections[0].mp)
+        return &pcap->sections[0];
+    if (mp == pcap->sections[1].mp)
+        return &pcap->sections[1];
+
+    return NULL;
+} // get the section pointer for a mempool, or NULL if not found
+
+static __inline__ void mbuf_iterate_cb(struct rte_mempool *mp, void *opaque, void *obj,
+                                       unsigned obj_idx __rte_unused);
+
+
+static void
+pcap_load_section(pcap_info_t *pcap, pcap_section_t *section)
+{
+    if (pcap == NULL || section == NULL || section->mp == NULL)
+        return;
+
+    pcap_section_reset(section); // reset the loaded packet count for this section before loading
+    rte_mempool_obj_iter(section->mp, mbuf_iterate_cb, pcap); // iterate over all mbufs in the mempool and load packets from the pcap file into them
+} // load packets into a section
+
 void
 pktgen_pcap_info(pcap_info_t *pcap, uint16_t port, int flag)
 {
@@ -67,8 +117,16 @@ pktgen_pcap_info(pcap_info_t *pcap, uint16_t port, int flag)
     printf(" sigfigs: %d,", pcap->info.sigfigs);
     printf(" network: %d", pcap->info.network);
     printf(" Convert Endian: %s\n", pcap->convert ? "Yes" : "No");
-    if (flag)
+    if (flag) {
         printf("  Packet count: %d, max size %d\n", pcap->pkt_count, pcap->max_pkt_size);
+        // print section load status and budgets
+        printf("  Section 0: loaded %u / %u, budget %lu bytes\n",
+               pcap->sections[0].pkt_loaded, pcap->sections[0].pkt_count,
+               (unsigned long)pcap->sections[0].budget_bytes);
+        printf("  Section 1: loaded %u / %u, budget %lu bytes\n",
+               pcap->sections[1].pkt_loaded, pcap->sections[1].pkt_count,
+               (unsigned long)pcap->sections[1].budget_bytes);
+    }
     fflush(stdout);
 }
 
@@ -155,6 +213,10 @@ mbuf_iterate_cb(struct rte_mempool *mp, void *opaque, void *obj, unsigned obj_id
     pcap_info_t *pcap     = (pcap_info_t *)opaque;
     struct rte_mbuf *m    = (struct rte_mbuf *)obj;
     pcap_record_hdr_t hdr = {0};
+    pcap_section_t *section = pcap_section_from_mp(pcap, mp); // get the section pointer for this mempool
+
+    if (section != NULL && section->pkt_loaded >= section->pkt_count)
+        return;
 
     if (fread(&hdr, 1, sizeof(pcap_record_hdr_t), pcap->fp) != sizeof(hdr)) {
         pcap_rewind(pcap);
@@ -173,6 +235,9 @@ mbuf_iterate_cb(struct rte_mempool *mp, void *opaque, void *obj, unsigned obj_id
     m->pkt_len  = hdr.incl_len;
     m->port     = 0;
     m->ol_flags = 0;
+
+    if (section != NULL)
+        section->pkt_loaded++;
 }
 
 int
@@ -247,9 +312,13 @@ pktgen_pcap_open(void)
             uint64_t reserve_hugepage_bytes =
                 (uint64_t)DEFAULT_PKTGEN_BASELINE_HUGEPAGES * hugepage_size_bytes;
             uint64_t available_hugepage_bytes = 0;
+            uint64_t section0_budget_bytes = 0; // initial hugepage budget for section 0, will be updated by pcap_split_section_budgets
+            uint64_t section1_budget_bytes = 0; // ^^
             uint64_t per_pkt_bytes =
                 RTE_ALIGN_CEIL(sizeof(struct rte_mbuf) + DEFAULT_PRIV_SIZE + dataroom,
                                RTE_CACHE_LINE_SIZE) + 32; // align to cache line size and account for potential mbuf overhead
+            uint32_t section0_pkt_cap = 0; // initial packet capacity for section 0, will be updated based on the section 0 budget and per-packet bytes
+            uint32_t section1_pkt_cap = 0; // ^^
             pktgen_log_info("PCAP port %d per_pkt_bytes calc: sizeof(rte_mbuf)=%zu "
                             "priv=%u dataroom=%u cache_line=%u result=%lu",
                             pid, sizeof(struct rte_mbuf), (unsigned)DEFAULT_PRIV_SIZE,
@@ -258,6 +327,21 @@ pktgen_pcap_open(void)
 
             if (total_hugepage_bytes > reserve_hugepage_bytes)
                 available_hugepage_bytes = total_hugepage_bytes - reserve_hugepage_bytes;
+
+            available_hugepage_bytes = pcap_split_section_budgets(
+                total_hugepage_bytes, reserve_hugepage_bytes, &section0_budget_bytes,
+                &section1_budget_bytes); // split the available hugepage bytes across the two sections and get the section budgets
+
+            pcap->sections[0].budget_bytes = section0_budget_bytes; // set the section 0 budget in the pcap info structure
+            pcap->sections[1].budget_bytes = section1_budget_bytes; // ^^
+
+            if (per_pkt_bytes > 0) {
+                section0_pkt_cap = (uint32_t)(section0_budget_bytes / per_pkt_bytes);
+                section1_pkt_cap = (uint32_t)(section1_budget_bytes / per_pkt_bytes);
+            } // calculate the packet capacity for each section based on the section budgets and per-packet bytes
+
+            pcap->sections[0].pkt_count = section0_pkt_cap; // set the section 0 packet count cap in the pcap info structure
+            pcap->sections[1].pkt_count = section1_pkt_cap; // ^^
 
             if (per_pkt_bytes > 0)
                 max_pkts_fit = (uint32_t)(available_hugepage_bytes / per_pkt_bytes);
@@ -281,15 +365,41 @@ pktgen_pcap_open(void)
                             pid, pkt_count);
         }
 
-        mp = rte_pktmbuf_pool_create(name, pkt_count, 0, DEFAULT_PRIV_SIZE, dataroom, sid);
+        uint32_t section0_create_pkts = pkt_count; // initial packet count for section 0
+        uint32_t section1_create_pkts = pkt_count; // ^^
+        if (have_hugepage_info == 0 && pcap->sections[0].pkt_count > 0)
+            section0_create_pkts = pcap->sections[0].pkt_count; // if we don't have hugepage info and the section 0 packet cap is set, use that as the packet count for section 0
+        if (have_hugepage_info == 0 && pcap->sections[1].pkt_count > 0)
+            section1_create_pkts = pcap->sections[1].pkt_count; // ^^
+
+        /* Ensure section caps are valid in all startup paths before loading. */
+        pcap->sections[0].pkt_count = section0_create_pkts;
+        pcap->sections[1].pkt_count = section1_create_pkts;
+
+        pktgen_log_info("PCAP port %d: section packet caps section0=%u section1=%u", pid,
+                        section0_create_pkts, section1_create_pkts); // log the final section packet caps that will be used for creating the mempools
+
+        mp = rte_pktmbuf_pool_create(name, section0_create_pkts, 0, DEFAULT_PRIV_SIZE, dataroom,
+                                     sid); // create the mempool for section 0 with the calculated packet count and dataroom
         if (mp == NULL)
             rte_exit(EXIT_FAILURE,
                      "Cannot create mbuf pool (%s) port %d, nb_mbufs %d, socket_id %d: %s", name,
-                     pid, pcap->pkt_count, sid, rte_strerror(rte_errno));
+                     pid, section0_create_pkts, sid, rte_strerror(rte_errno)); // if section 0 mempool creation fails, exit with an error
 
-        pcap->mp = mp;
+        pcap->mp = mp; // set the main mempool pointer in the pcap info structure to the section 0 mempool
+        pcap->sections[0].mp = mp; // set the section 0 mempool pointer in the pcap info structure
+        pcap_load_section(pcap, &pcap->sections[0]); // load packets into section 0
 
-        rte_mempool_obj_iter(mp, mbuf_iterate_cb, pcap);
+        snprintf(name, sizeof(name), "pcap-%d-sec1", pid); // create a name for the section 1 mempool based on the port ID
+        mp = rte_pktmbuf_pool_create(name, section1_create_pkts, 0, DEFAULT_PRIV_SIZE, dataroom,
+                                     sid); // create the mempool for section 1 with the calculated packet count and dataroom
+        if (mp == NULL)
+            rte_exit(EXIT_FAILURE,
+                     "Cannot create mbuf pool (%s) port %d, nb_mbufs %d, socket_id %d: %s", name,
+                     pid, section1_create_pkts, sid, rte_strerror(rte_errno)); // if section 1 mempool creation fails, exit with an error
+
+        pcap->sections[1].mp = mp; // set the section 1 mempool pointer in the pcap info structure
+        pcap_load_section(pcap, &pcap->sections[1]); // load packets into section 1
 
         if (l2p_set_pcap_info(pid, pcap) < 0)
             pktgen_log_error("Error opening PCAP file: %s", pcap->filename);
@@ -305,14 +415,16 @@ pktgen_pcap_close(void)
     for (int pid = 0; pid < RTE_MAX_ETHPORTS; pid++) {
         pcap = pcap_info_list[pid];
         if (pcap == NULL)
-            return;
+            continue; // changed from ret to continue since we want to attempt to close all pcaps even if one is NULL
 
         if (pcap->filename)
             free(pcap->filename);
         if (pcap->fp)
             fclose(pcap->fp);
-        if (pcap->mp)
-            rte_mempool_free(pcap->mp);
+        if (pcap->sections[0].mp)
+            rte_mempool_free(pcap->sections[0].mp); // free the section 0 mempool
+        if (pcap->sections[1].mp)
+            rte_mempool_free(pcap->sections[1].mp); // free the section 1 mempool
         rte_free(pcap);
     }
 }

@@ -2,3 +2,4 @@ research/
 hugepages/
 data/captures/
 data/*.pcap
+.vscode

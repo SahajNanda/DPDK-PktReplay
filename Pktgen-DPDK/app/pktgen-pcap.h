@@ -26,6 +26,15 @@ extern "C" {
 #define PCAP_MAGIC_NUMBER  0xa1b2c3d4 /**< PCAP global header magic (little-endian) */
 #define PCAP_MAJOR_VERSION 2          /**< PCAP file format major version */
 #define PCAP_MINOR_VERSION 4          /**< PCAP file format minor version */
+#define PCAP_NUM_SECTIONS  2          /**< Number of replay sections per port */
+
+/** One replay section for chunked PCAP loading. */
+typedef struct pcap_section_s {
+    struct rte_mempool *mp; /**< Mempool backing this section */
+    uint32_t pkt_count;     /**< Number of packets allocated in this section */
+    uint32_t pkt_loaded;    /**< Number of packets loaded into this section */
+    uint64_t budget_bytes;  /**< Hugepage budget assigned to this section */
+} pcap_section_t;
 
 /** PCAP global file header. */
 typedef struct pcap_hdr_s {
@@ -51,6 +60,7 @@ typedef struct pcap_info_s {
     char *filename;                  /**< allocated string for filename of pcap */
     FILE *fp;                        /**< file pointer for pcap file */
     struct rte_mempool *mp;          /**< Mempool for storing packets */
+    pcap_section_t sections[PCAP_NUM_SECTIONS]; /**< Two replay sections */
     uint32_t convert;                /**< Endian flag value if 1 convert to host endian format */
     uint32_t max_pkt_size;           /**< largest packet found in pcap file */
     uint32_t avg_pkt_size;           /**< average packet size in pcap file */

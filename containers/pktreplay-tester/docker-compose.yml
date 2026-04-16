@@ -16,7 +16,7 @@ services:
     container_name: sender
     volumes:
       - /lib/modules:/lib/modules
-      - /dev/hugepages:/dev/hugepages
+      - ../../hugepages:/DPDK-PktReplay/hugepages
       - ../../Pktgen-DPDK:/DPDK-PktReplay/Pktgen-DPDK
       - ../../data:/DPDK-PktReplay/data
       - ./scripts/sender:/DPDK-PktReplay/scripts
@@ -26,7 +26,7 @@ services:
     container_name: receiver
     volumes:
       - /lib/modules:/lib/modules
-      - /dev/hugepages:/dev/hugepages
+      - ../../hugepages:/DPDK-PktReplay/hugepages
       - ../../data/captures:/DPDK-PktReplay/captures
       - ./scripts/receiver:/DPDK-PktReplay/scripts
       - ./scripts/veth-setup.sh:/DPDK-PktReplay/veth-setup.sh
