@@ -1,5 +1,5 @@
 research/
 hugepages/
 data/captures/
-data/*.pcap
+data/**/*.pcap
 .vscode

@@ -135,7 +135,6 @@ pktgen_pcap_info(pcap_info_t *pcap, uint16_t port, int flag)
         printf("             chunk: %lu\n", (unsigned long)pcap->sections[1].chunk_id);
         printf("             offsets: %ld -> %ld\n", pcap->sections[1].file_offset_begin,
             pcap->sections[1].file_offset_end);
-        printf("TEST\n");
     }
     fflush(stdout);
 }
@@ -416,6 +415,23 @@ pktgen_pcap_open(void)
         if (l2p_set_pcap_info(pid, pcap) < 0)
             pktgen_log_error("Error opening PCAP file: %s", pcap->filename);
     }
+    return 0;
+}
+
+// reload a section of the pcap file into the corresponding mempool for a given port and section index
+int
+pktgen_pcap_reload_section(uint16_t pid, uint8_t section_idx)
+{
+    pcap_info_t *pcap;
+
+    if (pid >= RTE_MAX_ETHPORTS || section_idx >= PCAP_NUM_SECTIONS)
+        return -1; // validate the port ID and section index
+
+    pcap = pcap_info_list[pid]; // get the pcap info structure for the given port ID
+    if (pcap == NULL || pcap->fp == NULL)
+        return -1;
+
+    pcap_load_section(pcap, &pcap->sections[section_idx]); // load the specified section of the pcap file into the corresponding mempool
     return 0;
 }
 

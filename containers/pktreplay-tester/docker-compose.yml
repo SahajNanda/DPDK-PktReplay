@@ -20,7 +20,6 @@ services:
       - ../../Pktgen-DPDK:/DPDK-PktReplay/Pktgen-DPDK
       - ../../data:/DPDK-PktReplay/data
       - ./scripts/sender:/DPDK-PktReplay/scripts
-      - ./scripts/veth-setup.sh:/DPDK-PktReplay/veth-setup.sh
   receiver:
     <<: *pktreplay-common
     container_name: receiver
@@ -29,4 +28,3 @@ services:
       - ../../hugepages:/DPDK-PktReplay/hugepages
       - ../../data/captures:/DPDK-PktReplay/captures
       - ./scripts/receiver:/DPDK-PktReplay/scripts
-      - ./scripts/veth-setup.sh:/DPDK-PktReplay/veth-setup.sh

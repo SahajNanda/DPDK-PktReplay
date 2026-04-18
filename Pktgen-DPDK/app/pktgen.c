@@ -943,6 +943,9 @@ pktgen_send_pkts(port_info_t *pinfo, uint16_t qid, struct rte_mempool *mp)
                 pcap->active_section_idx = next_idx; // Move to the next section
                 pcap->pkt_index          = 0; // Reset packet index for the new section
                 mp                       = l2p_get_pcap_mp(pinfo->pid); // Update mempool to the new section's mempool
+                if (pktgen_pcap_reload_section(pinfo->pid, idx) < 0) // Reload the old section in the background
+                    pktgen_log_error("PCAP reload failed for port %u section %u", pinfo->pid,
+                                     idx);
             }
         }
     }

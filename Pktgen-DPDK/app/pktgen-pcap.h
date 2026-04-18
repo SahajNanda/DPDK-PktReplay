@@ -95,6 +95,9 @@ int pktgen_pcap_add(char *filename, uint16_t port);
  */
 int pktgen_pcap_open(void);
 
+/** Reload one replay section for a given port. */
+int pktgen_pcap_reload_section(uint16_t pid, uint8_t section_idx);
+
 /** Close all open PCAP file handles. */
 void pktgen_pcap_close(void);
 
