@@ -934,19 +934,24 @@ pktgen_send_pkts(port_info_t *pinfo, uint16_t qid, struct rte_mempool *mp)
     if (pktgen_tst_port_flags(pinfo, SEND_PCAP_PKTS)) { // Check if sending pcap packets
         pcap = l2p_get_pcap(pinfo->pid); // Get pcap info for the port
         if (pcap != NULL) {
-            uint8_t idx = pcap->active_section_idx; // Get the active section index
-            uint8_t next_idx          = (idx + 1) % PCAP_NUM_SECTIONS; // Set the next section index
+            pthread_mutex_lock(&pcap->state_mutex);
+            uint8_t idx      = pcap->active_section_idx; // Get the active section index
+            uint8_t next_idx = (idx + 1) % PCAP_NUM_SECTIONS; // Set the next section index
 
-            // Check if current section done sending and next section loaded
+            // Check if current section is exhausted and the next section is already loaded.
             if (idx < PCAP_NUM_SECTIONS && pcap->pkt_index >= pcap->sections[idx].pkt_loaded &&
                 pcap->sections[next_idx].pkt_loaded > 0) {
+                while (pcap->section_locked[next_idx] != 0)
+                    pthread_cond_wait(&pcap->reload_done_cond, &pcap->state_mutex);
+
                 pcap->active_section_idx = next_idx; // Move to the next section
                 pcap->pkt_index          = 0; // Reset packet index for the new section
-                mp                       = l2p_get_pcap_mp(pinfo->pid); // Update mempool to the new section's mempool
-                if (pktgen_pcap_reload_section(pinfo->pid, idx) < 0) // Reload the old section in the background
-                    pktgen_log_error("PCAP reload failed for port %u section %u", pinfo->pid,
-                                     idx);
+                pcap->section_locked[idx] = 1; // Prevent the exhausted section from becoming active
+                pcap->reload_request      = idx; // Ask the background thread to reload it
+                pthread_cond_signal(&pcap->reload_cond); // Wake the reload worker
+                mp = l2p_get_pcap_mp(pinfo->pid); // Update mempool to the new active section
             }
+            pthread_mutex_unlock(&pcap->state_mutex);
         }
     }
 

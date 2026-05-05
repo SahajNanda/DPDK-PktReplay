@@ -18,6 +18,7 @@
  */
 
 #include <pcap/bpf.h>
+#include <pthread.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -74,6 +75,15 @@ typedef struct pcap_info_s {
     pcap_hdr_t info;                 /**< information on the PCAP file */
     int32_t pcap_result;             /**< PCAP result of filter compile */
     struct bpf_program pcap_program; /**< PCAP filter program structure */
+
+    /* Background reload thread and synchronization primitives */
+    pthread_t reload_thread;         /**< Thread that handles background reloads */
+    pthread_mutex_t state_mutex;     /**< Protects reload state and flags */
+    pthread_cond_t reload_cond;      /**< Signals reload thread to start work */
+    pthread_cond_t reload_done_cond; /**< Signals transmission that reload completed */
+    int reload_request;              /**< Requested section index to reload, -1 if none */
+    int reload_in_progress;          /**< Section index currently reloading, -1 if none */
+    int section_locked[PCAP_NUM_SECTIONS]; /**< Logical locks for each section (1=locked) */
 
 } pcap_info_t;
 

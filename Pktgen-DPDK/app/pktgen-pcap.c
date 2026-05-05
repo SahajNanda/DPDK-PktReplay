@@ -95,6 +95,10 @@ pcap_section_from_mp(pcap_info_t *pcap, struct rte_mempool *mp)
 static __inline__ void mbuf_iterate_cb(struct rte_mempool *mp, void *opaque, void *obj,
                                        unsigned obj_idx __rte_unused);
 
+static void *pcap_reload_worker(void *arg);
+static int pcap_reload_thread_start(pcap_info_t *pcap);
+static void pcap_reload_thread_stop(pcap_info_t *pcap);
+
 
 static void
 pcap_load_section(pcap_info_t *pcap, pcap_section_t *section)
@@ -108,6 +112,64 @@ pcap_load_section(pcap_info_t *pcap, pcap_section_t *section)
     rte_mempool_obj_iter(section->mp, mbuf_iterate_cb, pcap); // iterate over all mbufs in the mempool and load packets from the pcap file into them
     section->file_offset_end = ftell(pcap->fp); // record the end offset for this section load
 } // load packets into a section
+
+static void *
+pcap_reload_worker(void *arg)
+{
+    pcap_info_t *pcap = (pcap_info_t *)arg;
+
+    if (pcap == NULL)
+        return NULL;
+
+    for (;;) {
+        pthread_mutex_lock(&pcap->state_mutex);
+        while (pcap->reload_request < 0)
+            pthread_cond_wait(&pcap->reload_cond, &pcap->state_mutex);
+
+        if (pcap->reload_request == -2) {
+            pthread_mutex_unlock(&pcap->state_mutex);
+            break;
+        }
+
+        int section_idx = pcap->reload_request;
+        pcap->reload_request = -1;
+        pcap->reload_in_progress = section_idx;
+        pthread_mutex_unlock(&pcap->state_mutex);
+
+        pcap_load_section(pcap, &pcap->sections[section_idx]);
+
+        pthread_mutex_lock(&pcap->state_mutex);
+        pcap->section_locked[section_idx] = 0;
+        pcap->reload_in_progress = -1;
+        pthread_cond_broadcast(&pcap->reload_done_cond);
+        pthread_mutex_unlock(&pcap->state_mutex);
+    }
+
+    return NULL;
+}
+
+static int
+pcap_reload_thread_start(pcap_info_t *pcap)
+{
+    if (pcap == NULL)
+        return -1;
+
+    return pthread_create(&pcap->reload_thread, NULL, pcap_reload_worker, pcap);
+}
+
+static void
+pcap_reload_thread_stop(pcap_info_t *pcap)
+{
+    if (pcap == NULL)
+        return;
+
+    pthread_mutex_lock(&pcap->state_mutex);
+    pcap->reload_request = -2;
+    pthread_cond_signal(&pcap->reload_cond);
+    pthread_mutex_unlock(&pcap->state_mutex);
+
+    pthread_join(pcap->reload_thread, NULL);
+}
 
 void
 pktgen_pcap_info(pcap_info_t *pcap, uint16_t port, int flag)
@@ -271,6 +333,13 @@ pktgen_pcap_add(char *filename, uint16_t pid)
     pcap->filename = strdup(filename);
     pcap->active_section_idx = 0; // start with section 0 as the active section
     pcap->next_chunk_id = 1; // initialize the next chunk ID to 1
+    pcap->reload_request = -1;
+    pcap->reload_in_progress = -1;
+    for (int i = 0; i < PCAP_NUM_SECTIONS; i++)
+        pcap->section_locked[i] = 0;
+    pthread_mutex_init(&pcap->state_mutex, NULL);
+    pthread_cond_init(&pcap->reload_cond, NULL);
+    pthread_cond_init(&pcap->reload_done_cond, NULL);
 
     pcap_info_list[pid] = pcap;
 
@@ -442,13 +511,17 @@ pktgen_pcap_open(void)
             pcap->sections[1].pkt_loaded = 0;
         }
 
+        if (pcap_reload_thread_start(pcap) != 0)
+            rte_exit(EXIT_FAILURE, "%s: failed to start PCAP reload thread for port %d\n",
+                     __func__, pid);
+
         if (l2p_set_pcap_info(pid, pcap) < 0)
             pktgen_log_error("Error opening PCAP file: %s", pcap->filename);
     }
     return 0;
 }
 
-// reload a section of the pcap file into the corresponding mempool for a given port and section index
+// queue a section reload for the background worker for a given port and section index
 int
 pktgen_pcap_reload_section(uint16_t pid, uint8_t section_idx)
 {
@@ -461,7 +534,14 @@ pktgen_pcap_reload_section(uint16_t pid, uint8_t section_idx)
     if (pcap == NULL || pcap->fp == NULL)
         return -1;
 
-    pcap_load_section(pcap, &pcap->sections[section_idx]); // load the specified section of the pcap file into the corresponding mempool
+    pthread_mutex_lock(&pcap->state_mutex);
+    while (pcap->reload_request >= 0 || pcap->reload_in_progress >= 0)
+        pthread_cond_wait(&pcap->reload_done_cond, &pcap->state_mutex);
+
+    pcap->section_locked[section_idx] = 1;
+    pcap->reload_request = section_idx;
+    pthread_cond_signal(&pcap->reload_cond);
+    pthread_mutex_unlock(&pcap->state_mutex);
     return 0;
 }
 
@@ -479,10 +559,14 @@ pktgen_pcap_close(void)
             free(pcap->filename);
         if (pcap->fp)
             fclose(pcap->fp);
+        pcap_reload_thread_stop(pcap);
         if (pcap->sections[0].mp)
             rte_mempool_free(pcap->sections[0].mp); // free the section 0 mempool
         if (pcap->sections[1].mp)
             rte_mempool_free(pcap->sections[1].mp); // free the section 1 mempool
+        pthread_cond_destroy(&pcap->reload_done_cond);
+        pthread_cond_destroy(&pcap->reload_cond);
+        pthread_mutex_destroy(&pcap->state_mutex);
         rte_free(pcap);
     }
 }
