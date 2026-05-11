@@ -19,6 +19,13 @@
 static pcap_info_t *pcap_info_list[RTE_MAX_ETHPORTS];
 
 #define DEFAULT_PKTGEN_BASELINE_HUGEPAGES 100
+#define PCAP_SECTION_PKT_MULTIPLE        64U
+
+static __inline__ uint32_t
+pcap_pkt_count_floor_multiple(uint32_t pkt_count)
+{
+    return pkt_count - (pkt_count % PCAP_SECTION_PKT_MULTIPLE);
+}
 
 static int
 get_total_hugepage_bytes(uint64_t *bytes, uint64_t *hugepage_size_bytes)
@@ -476,6 +483,16 @@ pktgen_pcap_open(void)
             section0_create_pkts = pcap->sections[0].pkt_count; // if we don't have hugepage info and the section 0 packet cap is set, use that as the packet count for section 0
         if (have_hugepage_info == 0 && pcap->sections[1].pkt_count > 0)
             section1_create_pkts = pcap->sections[1].pkt_count; // ^^
+
+        /* Load counts must be chunked in fixed 64-packet sections. */
+        section0_create_pkts = pcap_pkt_count_floor_multiple(section0_create_pkts);
+        section1_create_pkts = pcap_pkt_count_floor_multiple(section1_create_pkts);
+
+        if (section0_create_pkts == 0)
+            rte_exit(EXIT_FAILURE,
+                     "%s: section 0 packet capacity for port %d is below %u packets; "
+                     "cannot satisfy section multiple requirement",
+                     __func__, pid, PCAP_SECTION_PKT_MULTIPLE);
 
         /* Ensure section caps are valid in all startup paths before loading. */
         pcap->sections[0].pkt_count = section0_create_pkts;

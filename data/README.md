@@ -17,6 +17,9 @@ Data not included in repo due to large size, but recreation steps are included b
     - `-c 1000000` sets number of packets read from input pcap file
     - `-w filter.pcap` sets the output pcap file name
 
+dumpcap -i veth1 -s 64 -B 512 -w /dev/shm/rem2.pcapng
+tshark -r /dev/shm/rem2.pcapng > captures/rem2.txt
+
 ## Data Scripts
 
 This repository also includes helper scripts in `data/scripts` for generating and post-processing packet data used in replay testing.
