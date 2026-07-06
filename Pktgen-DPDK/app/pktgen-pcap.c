@@ -18,7 +18,7 @@
 
 static pcap_info_t *pcap_info_list[RTE_MAX_ETHPORTS];
 
-#define DEFAULT_PKTGEN_BASELINE_HUGEPAGES 100
+#define DEFAULT_PKTGEN_BASELINE_HUGEPAGES 200
 #define PCAP_SECTION_PKT_MULTIPLE        64U
 
 static __inline__ uint32_t
