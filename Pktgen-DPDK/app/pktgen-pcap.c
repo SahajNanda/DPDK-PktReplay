@@ -18,8 +18,8 @@
 
 static pcap_info_t *pcap_info_list[RTE_MAX_ETHPORTS];
 
-#define DEFAULT_PKTGEN_BASELINE_HUGEPAGES 200
 #define PCAP_SECTION_PKT_MULTIPLE        64U
+#define PCAP_BASELINE_HUGEPAGE_SIZE_KB   2048ULL
 
 static __inline__ uint32_t
 pcap_pkt_count_floor_multiple(uint32_t pkt_count)
@@ -77,6 +77,20 @@ pcap_split_section_budgets(uint64_t total_hugepage_bytes, uint64_t reserve_hugep
 
     return usable_hugepage_bytes;
 } // splite hugepage budget across two sections
+
+static uint64_t
+pcap_get_baseline_hugepages(void)
+{
+    uint64_t total_mem_used_kb = (pktgen.total_mem_used + 1023ULL) / 1024ULL;
+    uint64_t needed_hugepages =
+        (total_mem_used_kb + PCAP_BASELINE_HUGEPAGE_SIZE_KB - 1ULL) / PCAP_BASELINE_HUGEPAGE_SIZE_KB;
+    uint64_t baseline_hugepages = (needed_hugepages * 3ULL + 1ULL) / 2ULL;
+
+    if (baseline_hugepages == 0)
+        baseline_hugepages = 1;
+
+    return baseline_hugepages;
+}
 
 static __inline__ void
 pcap_section_reset(pcap_section_t *section)
@@ -363,6 +377,7 @@ pktgen_pcap_open(void)
     uint32_t pkt_count;
     uint64_t total_hugepage_bytes = 0;
     uint64_t hugepage_size_bytes = 0;
+    uint64_t baseline_hugepages = 0;
     int have_hugepage_info;
 
     have_hugepage_info = get_total_hugepage_bytes(&total_hugepage_bytes, &hugepage_size_bytes);
@@ -396,8 +411,9 @@ pktgen_pcap_open(void)
         pktgen_log_info("PCAP port %d: dataroom bytes calculated: %u", pid, dataroom); // remove
 
         if (have_hugepage_info == 0) {
+            baseline_hugepages = pcap_get_baseline_hugepages();
             uint64_t reserve_hugepage_bytes =
-                (uint64_t)DEFAULT_PKTGEN_BASELINE_HUGEPAGES * hugepage_size_bytes;
+                baseline_hugepages * PCAP_BASELINE_HUGEPAGE_SIZE_KB * 1024ULL;
             uint64_t available_hugepage_bytes = 0;
             uint64_t section0_budget_bytes = 0; // initial hugepage budget for section 0, will be updated by pcap_split_section_budgets
             uint64_t section1_budget_bytes = 0; // ^^
@@ -437,8 +453,7 @@ pktgen_pcap_open(void)
                 rte_exit(EXIT_FAILURE,
                          "%s: not enough hugepage memory for PCAP port %d "
                          "(total=%lu bytes, reserved baseline=%lu pages)",
-                         __func__, pid, total_hugepage_bytes,
-                         (uint64_t)DEFAULT_PKTGEN_BASELINE_HUGEPAGES);
+                         __func__, pid, total_hugepage_bytes, baseline_hugepages);
 
             if (pkt_count <= max_pkts_fit) { // if packets fit into hugepages, allocate all packets in one section
                 pcap->sections[0].budget_bytes = available_hugepage_bytes;
