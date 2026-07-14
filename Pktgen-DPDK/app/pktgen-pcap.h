@@ -84,6 +84,10 @@ typedef struct pcap_info_s {
     int reload_request;              /**< Requested section index to reload, -1 if none */
     int reload_in_progress;          /**< Section index currently reloading, -1 if none */
     int section_locked[PCAP_NUM_SECTIONS]; /**< Logical locks for each section (1=locked) */
+    char **source_files;             /**< Ordered list of source PCAP files */
+    uint32_t source_file_count;      /**< Number of source files in source_files */
+    uint32_t source_file_index;      /**< Index of the current source file */
+    uint32_t source_convert;         /**< Endian conversion flag for current source file */
 
 } pcap_info_t;
 

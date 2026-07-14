@@ -71,7 +71,7 @@ pktgen_usage(const char *prgname)
            "  -f filename   Command file (.pkt) to execute\n"
 #endif
            "  -l filename   Write log to filename\n"
-           "  -s P:filepath PCAP packet stream file, 'P' is the port number\n"
+           "  -s P:filepath PCAP packet stream file or directory, 'P' is the port number\n"
            "  -P            Enable PROMISCUOUS mode on all ports\n"
            "  -g address    Optional IP address and port number default is (localhost:0x5606)\n"
            "                If -g is used that enable socket support as a server application\n"
@@ -283,7 +283,7 @@ pktgen_parse_args(int argc, char **argv)
     return ret;
 
 pcap_err:
-    pktgen_log_error("Invalid PCAP filename (%s) must include port number as P:filename", optarg);
+    pktgen_log_error("Invalid PCAP source (%s) must include port number as P:path", optarg);
     pktgen_usage(prgname);
     return -1;
 }

@@ -7,6 +7,9 @@
 
 #include <lua_config.h>
 
+#include <dirent.h>
+#include <sys/stat.h>
+
 #include "pktgen-display.h"
 #include "pktgen-log.h"
 
@@ -20,11 +23,310 @@ static pcap_info_t *pcap_info_list[RTE_MAX_ETHPORTS];
 
 #define PCAP_SECTION_PKT_MULTIPLE        64U
 #define PCAP_BASELINE_HUGEPAGE_SIZE_KB   2048ULL
+#define PCAPNG_MAGIC_NUMBER              0x0A0D0D0A
 
 static __inline__ uint32_t
 pcap_pkt_count_floor_multiple(uint32_t pkt_count)
 {
     return pkt_count - (pkt_count % PCAP_SECTION_PKT_MULTIPLE);
+}
+
+static int
+pcap_has_pcap_suffix(const char *filename)
+{
+    size_t length;
+
+    if (filename == NULL)
+        return 0;
+
+    length = strlen(filename);
+    if (length < 5)
+        return 0;
+
+    return strcmp(filename + (length - 5), ".pcap") == 0;
+}
+
+static int
+pcap_dir_entry_cmp(const void *lhs, const void *rhs)
+{
+    const char *const *left = (const char *const *)lhs;
+    const char *const *right = (const char *const *)rhs;
+
+    return strcmp(*left, *right);
+}
+
+static char *
+pcap_join_path(const char *dirpath, const char *entry)
+{
+    size_t dir_len;
+    size_t entry_len;
+    size_t total_len;
+    char *path;
+
+    if (dirpath == NULL || entry == NULL)
+        return NULL;
+
+    dir_len = strlen(dirpath);
+    entry_len = strlen(entry);
+    total_len = dir_len + entry_len + 2;
+
+    path = malloc(total_len);
+    if (path == NULL)
+        return NULL;
+
+    if (dir_len > 0 && dirpath[dir_len - 1] == '/')
+        snprintf(path, total_len, "%s%s", dirpath, entry);
+    else
+        snprintf(path, total_len, "%s/%s", dirpath, entry);
+
+    return path;
+}
+
+static void
+pcap_free_directory_entries(char **entries, size_t entry_count)
+{
+    if (entries == NULL)
+        return;
+
+    for (size_t i = 0; i < entry_count; i++)
+        free(entries[i]);
+
+    free(entries);
+}
+
+static void
+pcap_convert_record_header(int convert, pcap_record_hdr_t *hdr)
+{
+    if (convert) {
+        hdr->incl_len = ntohl(hdr->incl_len);
+        hdr->orig_len = ntohl(hdr->orig_len);
+        hdr->ts_sec   = ntohl(hdr->ts_sec);
+        hdr->ts_usec  = ntohl(hdr->ts_usec);
+    }
+}
+
+static int
+pcap_collect_directory_entries(const char *dirpath, char ***entries_out, size_t *count_out)
+{
+    DIR *dir = NULL;
+    struct dirent *dent = NULL;
+    struct stat st;
+    char **entries = NULL;
+    size_t count = 0;
+    size_t capacity = 0;
+
+    if (entries_out == NULL || count_out == NULL)
+        return -1;
+
+    *entries_out = NULL;
+    *count_out = 0;
+
+    dir = opendir(dirpath);
+    if (dir == NULL)
+        rte_exit(EXIT_FAILURE, "%s: failed to open directory source (%s)\n", __func__,
+                 dirpath);
+
+    while ((dent = readdir(dir)) != NULL) {
+        char *full_path;
+
+        if (strcmp(dent->d_name, ".") == 0 || strcmp(dent->d_name, "..") == 0)
+            continue;
+
+        full_path = pcap_join_path(dirpath, dent->d_name);
+        if (full_path == NULL)
+            rte_exit(EXIT_FAILURE, "%s: out of memory while scanning directory (%s)\n",
+                     __func__, dirpath);
+
+        if (stat(full_path, &st) < 0)
+            rte_exit(EXIT_FAILURE, "%s: failed to stat directory entry (%s)\n", __func__,
+                     full_path);
+
+        if (!S_ISREG(st.st_mode) || !pcap_has_pcap_suffix(dent->d_name)) {
+            free(full_path);
+            rte_exit(EXIT_FAILURE,
+                     "%s: directory source (%s) contains a non-.pcap file (%s)\n", __func__,
+                     dirpath, dent->d_name);
+        }
+
+        free(full_path);
+
+        if (count == capacity) {
+            size_t new_capacity = capacity == 0 ? 8 : capacity * 2;
+            char **new_entries = realloc(entries, new_capacity * sizeof(*new_entries));
+
+            if (new_entries == NULL) {
+                closedir(dir);
+                pcap_free_directory_entries(entries, count);
+                rte_exit(EXIT_FAILURE, "%s: out of memory while collecting directory entries\n",
+                         __func__);
+            }
+
+            entries = new_entries;
+            capacity = new_capacity;
+        }
+
+        entries[count] = strdup(dent->d_name);
+        if (entries[count] == NULL) {
+            closedir(dir);
+            pcap_free_directory_entries(entries, count);
+            rte_exit(EXIT_FAILURE, "%s: out of memory while copying directory entry name\n",
+                     __func__);
+        }
+
+        count++;
+    }
+
+    closedir(dir);
+
+    if (count == 0)
+        rte_exit(EXIT_FAILURE, "%s: directory source (%s) does not contain any .pcap files\n",
+                 __func__, dirpath);
+
+    qsort(entries, count, sizeof(*entries), pcap_dir_entry_cmp);
+
+    *entries_out = entries;
+    *count_out = count;
+    return 0;
+}
+
+static int
+pcap_decode_header(pcap_hdr_t *hdr, uint32_t *convert)
+{
+    if (hdr->magic_number == PCAPNG_MAGIC_NUMBER)
+        return -2;
+
+    if (hdr->magic_number == PCAP_MAGIC_NUMBER)
+        *convert = 0;
+    else if (hdr->magic_number == ntohl(PCAP_MAGIC_NUMBER))
+        *convert = 1;
+    else
+        return -1;
+
+    if (*convert) {
+        hdr->magic_number  = ntohl(hdr->magic_number);
+        hdr->version_major = ntohs(hdr->version_major);
+        hdr->version_minor = ntohs(hdr->version_minor);
+        hdr->thiszone      = ntohl(hdr->thiszone);
+        hdr->sigfigs       = ntohl(hdr->sigfigs);
+        hdr->snaplen       = ntohl(hdr->snaplen);
+        hdr->network       = ntohl(hdr->network);
+    }
+
+    return 0;
+}
+
+static void
+pcap_free_source_files(pcap_info_t *pcap)
+{
+    if (pcap->source_files == NULL)
+        return;
+
+    for (uint32_t i = 0; i < pcap->source_file_count; i++)
+        free(pcap->source_files[i]);
+
+    free(pcap->source_files);
+    pcap->source_files = NULL;
+    pcap->source_file_count = 0;
+    pcap->source_file_index = 0;
+    pcap->source_convert = 0;
+}
+
+static int
+pcap_open_source_index(pcap_info_t *pcap, uint32_t source_idx)
+{
+    pcap_hdr_t hdr;
+    uint32_t convert = 0;
+    int decode_rc;
+
+    if (source_idx >= pcap->source_file_count)
+        return -1;
+
+    if (pcap->fp != NULL) {
+        fclose(pcap->fp);
+        pcap->fp = NULL;
+    }
+
+    pcap->fp = fopen(pcap->source_files[source_idx], "rb");
+    if (pcap->fp == NULL)
+        rte_exit(EXIT_FAILURE, "%s: failed to open PCAP source file (%s)\n", __func__,
+                 pcap->source_files[source_idx]);
+
+    if (fread(&hdr, 1, sizeof(hdr), pcap->fp) != sizeof(hdr))
+        rte_exit(EXIT_FAILURE, "%s: failed to read PCAP header (%s)\n", __func__,
+                 pcap->source_files[source_idx]);
+
+    decode_rc = pcap_decode_header(&hdr, &convert);
+    if (decode_rc == -2)
+        rte_exit(EXIT_FAILURE, "%s: pcapng format is not supported (%s)\n", __func__,
+                 pcap->source_files[source_idx]);
+    if (decode_rc < 0)
+        rte_exit(EXIT_FAILURE, "%s: invalid PCAP magic number in (%s)\n", __func__,
+                 pcap->source_files[source_idx]);
+
+    pcap->source_file_index = source_idx;
+    pcap->source_convert = convert;
+    return 0;
+}
+
+static int
+pcap_rewind(pcap_info_t *pcap)
+{
+    if (pcap == NULL || pcap->source_file_count == 0)
+        return -1;
+
+    return pcap_open_source_index(pcap, 0);
+}
+
+static int
+pcap_prepare_source_files(pcap_info_t *pcap)
+{
+    struct stat source_stat;
+
+    pcap_free_source_files(pcap);
+
+    if (stat(pcap->filename, &source_stat) < 0)
+        rte_exit(EXIT_FAILURE, "%s: failed to stat PCAP source (%s)\n", __func__,
+                 pcap->filename);
+
+    if (S_ISDIR(source_stat.st_mode)) {
+        char **entries = NULL;
+        size_t entry_count = 0;
+
+        if (pcap_collect_directory_entries(pcap->filename, &entries, &entry_count) < 0)
+            return -1;
+
+        pcap->source_files = calloc(entry_count, sizeof(*pcap->source_files));
+        if (pcap->source_files == NULL)
+            rte_exit(EXIT_FAILURE, "%s: out of memory while creating source file list\n",
+                     __func__);
+
+        pcap->source_file_count = (uint32_t)entry_count;
+        for (uint32_t i = 0; i < pcap->source_file_count; i++) {
+            pcap->source_files[i] = pcap_join_path(pcap->filename, entries[i]);
+            if (pcap->source_files[i] == NULL)
+                rte_exit(EXIT_FAILURE, "%s: out of memory while creating source file path\n",
+                         __func__);
+        }
+
+        pcap_free_directory_entries(entries, entry_count);
+    } else if (S_ISREG(source_stat.st_mode)) {
+        pcap->source_files = calloc(1, sizeof(*pcap->source_files));
+        if (pcap->source_files == NULL)
+            rte_exit(EXIT_FAILURE, "%s: out of memory while creating source file list\n",
+                     __func__);
+
+        pcap->source_files[0] = strdup(pcap->filename);
+        if (pcap->source_files[0] == NULL)
+            rte_exit(EXIT_FAILURE, "%s: out of memory while copying source file path\n",
+                     __func__);
+
+        pcap->source_file_count = 1;
+    } else {
+        rte_exit(EXIT_FAILURE, "%s: PCAP source must be a file or directory (%s)\n", __func__,
+                 pcap->filename);
+    }
+
+    return 0;
 }
 
 static int
@@ -222,81 +524,121 @@ pktgen_pcap_info(pcap_info_t *pcap, uint16_t port, int flag)
     fflush(stdout);
 }
 
-static __inline__ void
-pcap_convert(pcap_info_t *pcap, pcap_record_hdr_t *pHdr)
-{
-    if (pcap->convert) {
-        pHdr->incl_len = ntohl(pHdr->incl_len);
-        pHdr->orig_len = ntohl(pHdr->orig_len);
-        pHdr->ts_sec   = ntohl(pHdr->ts_sec);
-        pHdr->ts_usec  = ntohl(pHdr->ts_usec);
-    }
-}
-
-static void
-pcap_rewind(pcap_info_t *pcap)
-{
-    /* Rewind to the beginning */
-    rewind(pcap->fp);
-
-    /* Seek past the pcap header */
-    (void)fseek(pcap->fp, sizeof(pcap_hdr_t), SEEK_SET);
-}
-
 static void
 pcap_get_info(pcap_info_t *pcap)
 {
-    pcap_record_hdr_t hdr;
-
-    if (fread(&pcap->info, 1, sizeof(pcap_hdr_t), pcap->fp) != sizeof(pcap_hdr_t))
-        rte_exit(EXIT_FAILURE, "%s: failed to read pcap header\n", __func__);
-
-    /* Make sure we have a valid PCAP file for Big or Little Endian formats. */
-    if (pcap->info.magic_number == PCAP_MAGIC_NUMBER)
-        pcap->convert = 0;
-    else if (pcap->info.magic_number == ntohl(PCAP_MAGIC_NUMBER))
-        pcap->convert = 1;
-    else
-        rte_exit(EXIT_FAILURE, "%s: invalid magic number 0x%08x\n", __func__,
-                 pcap->info.magic_number);
-
-    if (pcap->convert) {
-        pcap->info.magic_number  = ntohl(pcap->info.magic_number);
-        pcap->info.version_major = ntohs(pcap->info.version_major);
-        pcap->info.version_minor = ntohs(pcap->info.version_minor);
-        pcap->info.thiszone      = ntohl(pcap->info.thiszone);
-        pcap->info.sigfigs       = ntohl(pcap->info.sigfigs);
-        pcap->info.snaplen       = ntohl(pcap->info.snaplen);
-        pcap->info.network       = ntohl(pcap->info.network);
-    }
-
-    pcap->max_pkt_size  = 0;
-    pcap->avg_pkt_size  = 0;
     uint64_t total_size = 0;
-    /* count the number of packets and get the largest size packet */
-    for (;;) {
-        if (fread(&hdr, 1, sizeof(pcap_record_hdr_t), pcap->fp) != sizeof(hdr))
-            break;
+    int info_set = 0;
 
-        /* Convert the packet header to the correct format if needed */
-        pcap_convert(pcap, &hdr);
+    pcap->pkt_count = 0;
+    pcap->max_pkt_size = 0;
+    pcap->avg_pkt_size = 0;
 
-        if (fseek(pcap->fp, hdr.incl_len, SEEK_CUR) < 0)
-            break;
+    for (uint32_t i = 0; i < pcap->source_file_count; i++) {
+        FILE *fp;
+        pcap_hdr_t hdr;
+        uint32_t convert = 0;
+        int decode_rc;
 
-        pcap->pkt_count++;
-        if (hdr.incl_len > pcap->max_pkt_size)
-            pcap->max_pkt_size = hdr.incl_len;
+        fp = fopen(pcap->source_files[i], "rb");
+        if (fp == NULL)
+            rte_exit(EXIT_FAILURE, "%s: failed to open PCAP source file (%s)\n", __func__,
+                     pcap->source_files[i]);
 
-        total_size += hdr.incl_len;
+        if (fread(&hdr, 1, sizeof(hdr), fp) != sizeof(hdr)) {
+            fclose(fp);
+            rte_exit(EXIT_FAILURE, "%s: failed to read PCAP header (%s)\n", __func__,
+                     pcap->source_files[i]);
+        }
+
+        decode_rc = pcap_decode_header(&hdr, &convert);
+        if (decode_rc == -2) {
+            fclose(fp);
+            rte_exit(EXIT_FAILURE, "%s: pcapng format is not supported (%s)\n", __func__,
+                     pcap->source_files[i]);
+        }
+        if (decode_rc < 0) {
+            fclose(fp);
+            rte_exit(EXIT_FAILURE, "%s: invalid PCAP magic number in (%s)\n", __func__,
+                     pcap->source_files[i]);
+        }
+
+        if (!info_set) {
+            pcap->info = hdr;
+            pcap->convert = convert;
+            info_set = 1;
+        }
+
+        for (;;) {
+            pcap_record_hdr_t rec_hdr;
+            size_t read_bytes = fread(&rec_hdr, 1, sizeof(rec_hdr), fp);
+
+            if (read_bytes == 0)
+                break;
+            if (read_bytes != sizeof(rec_hdr)) {
+                fclose(fp);
+                rte_exit(EXIT_FAILURE, "%s: truncated PCAP record in (%s)\n", __func__,
+                         pcap->source_files[i]);
+            }
+
+            pcap_convert_record_header(convert, &rec_hdr);
+
+            if (fseek(fp, rec_hdr.incl_len, SEEK_CUR) < 0) {
+                fclose(fp);
+                rte_exit(EXIT_FAILURE, "%s: invalid PCAP packet payload in (%s)\n", __func__,
+                         pcap->source_files[i]);
+            }
+
+            pcap->pkt_count++;
+            if (rec_hdr.incl_len > pcap->max_pkt_size)
+                pcap->max_pkt_size = rec_hdr.incl_len;
+            total_size += rec_hdr.incl_len;
+        }
+
+        fclose(fp);
     }
+
+    if (pcap->pkt_count == 0)
+        rte_exit(EXIT_FAILURE, "%s: PCAP source is empty (%s)\n", __func__, pcap->filename);
+
     printf("PCAP: Max Packet Size: %d\n", pcap->max_pkt_size);
 
     pcap->avg_pkt_size = total_size / pcap->pkt_count;
 
     printf("PCAP: Avg Packet Size: %d\n", pcap->avg_pkt_size);
 
-    pcap_rewind(pcap);
+    if (pcap_rewind(pcap) < 0)
+        rte_exit(EXIT_FAILURE, "%s: failed to rewind PCAP source (%s)\n", __func__,
+                 pcap->filename);
+}
+
+static int
+pcap_read_record_header(pcap_info_t *pcap, pcap_record_hdr_t *hdr)
+{
+    if (pcap == NULL || hdr == NULL || pcap->fp == NULL || pcap->source_file_count == 0)
+        return -1;
+
+    for (;;) {
+        if (fread(hdr, 1, sizeof(*hdr), pcap->fp) == sizeof(*hdr)) {
+            pcap_convert_record_header(pcap->source_convert, hdr);
+            return 0;
+        }
+
+        if (feof(pcap->fp)) {
+            uint32_t next = pcap->source_file_index + 1;
+
+            clearerr(pcap->fp);
+            if (next >= pcap->source_file_count)
+                next = 0;
+
+            if (pcap_open_source_index(pcap, next) < 0)
+                return -1;
+            continue;
+        }
+
+        rte_exit(EXIT_FAILURE, "%s: failed to read packet record from (%s)\n", __func__,
+                 pcap->source_files[pcap->source_file_index]);
+    }
 }
 
 static __inline__ void
@@ -310,16 +652,12 @@ mbuf_iterate_cb(struct rte_mempool *mp, void *opaque, void *obj, unsigned obj_id
     if (section != NULL && section->pkt_loaded >= section->pkt_count)
         return;
 
-    if (fread(&hdr, 1, sizeof(pcap_record_hdr_t), pcap->fp) != sizeof(hdr)) {
-        pcap_rewind(pcap);
-        if (fread(&hdr, 1, sizeof(pcap_record_hdr_t), pcap->fp) != sizeof(hdr))
-            rte_exit(EXIT_FAILURE, "%s: failed to read pcap header\n", __func__);
-    }
+    if (pcap_read_record_header(pcap, &hdr) < 0)
+        rte_exit(EXIT_FAILURE, "%s: failed to read packet header from source list\n", __func__);
 
-    pcap_convert(pcap, &hdr); /* Convert the packet header to the correct format. */
-
-    if (fread(rte_pktmbuf_mtod(m, char *), 1, hdr.incl_len, pcap->fp) == 0)
-        rte_exit(EXIT_FAILURE, "%s: failed to read packet data from PCAP file\n", __func__);
+    if (fread(rte_pktmbuf_mtod(m, char *), 1, hdr.incl_len, pcap->fp) != hdr.incl_len)
+        rte_exit(EXIT_FAILURE, "%s: failed to read packet data from (%s)\n", __func__,
+                 pcap->source_files[pcap->source_file_index]);
 
     m->pool     = mp;
     m->next     = NULL;
@@ -356,6 +694,10 @@ pktgen_pcap_add(char *filename, uint16_t pid)
     pcap->next_chunk_id = 1; // initialize the next chunk ID to 1
     pcap->reload_request = -1;
     pcap->reload_in_progress = -1;
+    pcap->source_files = NULL;
+    pcap->source_file_count = 0;
+    pcap->source_file_index = 0;
+    pcap->source_convert = 0;
     for (int i = 0; i < PCAP_NUM_SECTIONS; i++)
         pcap->section_locked[i] = 0;
     pthread_mutex_init(&pcap->state_mutex, NULL);
@@ -390,18 +732,13 @@ pktgen_pcap_open(void)
 
         sid = pg_eth_dev_socket_id(pid);
 
-        /* Read the pcap file trailer. */
-        pcap->fp = fopen((const char *)pcap->filename, "r");
-        if (pcap->fp == NULL)
-            rte_exit(EXIT_FAILURE, "%s: failed for (%s)\n", __func__, pcap->filename);
+        if (pcap_prepare_source_files(pcap) < 0)
+            rte_exit(EXIT_FAILURE, "%s: failed to prepare PCAP source list (%s)\n", __func__,
+                     pcap->filename);
 
         pcap_get_info(pcap);
 
         pkt_count = pcap->pkt_count;
-        if (pkt_count == 0) {
-            fclose(pcap->fp);
-            rte_exit(EXIT_FAILURE, "%s: PCAP file is empty: %s\n", __func__, pcap->filename);
-        }
         if (pkt_count < (DEFAULT_TX_DESC * 4))
             pkt_count = (DEFAULT_TX_DESC * 4);
 
@@ -587,11 +924,12 @@ pktgen_pcap_close(void)
         if (pcap == NULL)
             continue; // changed from ret to continue since we want to attempt to close all pcaps even if one is NULL
 
-        if (pcap->filename)
-            free(pcap->filename);
+        pcap_reload_thread_stop(pcap);
         if (pcap->fp)
             fclose(pcap->fp);
-        pcap_reload_thread_stop(pcap);
+        pcap_free_source_files(pcap);
+        if (pcap->filename)
+            free(pcap->filename);
         if (pcap->sections[0].mp)
             rte_mempool_free(pcap->sections[0].mp); // free the section 0 mempool
         if (pcap->sections[1].mp)
