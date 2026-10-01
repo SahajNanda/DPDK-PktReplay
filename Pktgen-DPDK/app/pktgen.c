@@ -929,6 +929,59 @@ pktgen_send_pkts(port_info_t *pinfo, uint16_t qid, struct rte_mempool *mp)
 {
     uint64_t txCnt;
     struct rte_mbuf **pkts = pinfo->per_queue[qid].tx_pkts;
+    pcap_info_t *pcap       = NULL;
+
+    if (pktgen_tst_port_flags(pinfo, SEND_PCAP_PKTS)) { // Check if sending pcap packets
+        pcap = l2p_get_pcap(pinfo->pid); // Get pcap info for the port
+        if (pcap != NULL) {
+            pthread_mutex_lock(&pcap->state_mutex);
+            uint8_t idx      = pcap->active_section_idx; // Get the active section index
+            uint8_t next_idx = (idx + 1) % PCAP_NUM_SECTIONS; // Set the next section index
+
+            /* If current section is exhausted, ensure we switch to the next section
+             * only when that next section has been loaded. If the next section is
+             * not loaded yet, pause transmission here (wait) until it is loaded.
+             * Once next is ready, switch active section and request a reload of
+             * the exhausted section so it can be refilled in background.
+             */
+            if (idx < PCAP_NUM_SECTIONS && pcap->pkt_index >= pcap->sections[idx].pkt_loaded) {
+                /* If next section doesn't exist (no mempool) we cannot switch. */
+                if (pcap->sections[next_idx].mp != NULL) {
+                    /* If next has no packets loaded, request a reload for it if no
+                     * reload is already pending, then wait for the reload to finish.
+                     */
+                    if (pcap->sections[next_idx].pkt_loaded == 0) {
+                        if (pcap->reload_request < 0 && pcap->reload_in_progress < 0 &&
+                            pcap->section_locked[next_idx] == 0) {
+                            pcap->section_locked[next_idx] = 1; /* reserve it */
+                            pcap->reload_request = next_idx;
+                            pthread_cond_signal(&pcap->reload_cond);
+                        }
+
+                        while (pcap->sections[next_idx].pkt_loaded == 0)
+                            pthread_cond_wait(&pcap->reload_done_cond, &pcap->state_mutex);
+                    } else {
+                        /* Wait until the next section is unlocked and available. */
+                        while (pcap->section_locked[next_idx] != 0) {
+                            printf("remove. Next section %u is locked, waiting\n", next_idx);
+                            pthread_cond_wait(&pcap->reload_done_cond, &pcap->state_mutex);
+                        }
+                    }
+
+                    /* Now that next is loaded and available, switch to it and
+                     * request reload of the exhausted section.
+                     */
+                    pcap->active_section_idx = next_idx;
+                    pcap->pkt_index          = 0;
+                    pcap->section_locked[idx] = 1; /* mark old section for reload */
+                    pcap->reload_request      = idx; /* ask worker to reload old section */
+                    pthread_cond_signal(&pcap->reload_cond);
+                    mp = l2p_get_pcap_mp(pinfo->pid);
+                }
+            }
+            pthread_mutex_unlock(&pcap->state_mutex);
+        }
+    }
 
     if (!pktgen_tst_port_flags(pinfo, SEND_FOREVER)) {
         txCnt = pkt_atomic64_tx_count(&pinfo->current_tx_count, pinfo->tx_burst);
@@ -941,8 +994,11 @@ pktgen_send_pkts(port_info_t *pinfo, uint16_t qid, struct rte_mempool *mp)
     } else
         txCnt = pinfo->tx_burst;
 
-    if (rte_mempool_get_bulk(mp, (void **)pkts, txCnt) == 0)
+    if (rte_mempool_get_bulk(mp, (void **)pkts, txCnt) == 0) {
         tx_send_packets(pinfo, qid, pkts, txCnt);
+        if (pcap != NULL && qid == 0) // Only update packet index for the first queue
+            pcap->pkt_index += txCnt; // Update packet index after sending
+    }
 }
 
 /**

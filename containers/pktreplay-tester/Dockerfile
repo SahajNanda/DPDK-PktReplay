@@ -50,26 +50,5 @@ RUN rm -rf build \
 ENV RTE_SDK=/DPDK-PktReplay/dpdk-25.11
 ENV RTE_TARGET=build
 
-# Copy Pktgen Repository
-COPY Pktgen-DPDK /DPDK-PktReplay/Pktgen-DPDK
-
-# Change working directory to Pktgen
-WORKDIR /DPDK-PktReplay/Pktgen-DPDK
-
-# Build and Install Pktgen
-RUN meson setup builddir -Denable_lua=true \
-    && meson compile -C builddir \
-    && meson install -C builddir \
-    && ldconfig
-
-# Copy Startup Scripts
-COPY containers/dpdk-pktreplay/scripts /DPDK-PktReplay/scripts
-COPY containers/dpdk-pktreplay/start.sh /DPDK-PktReplay/start.sh
-RUN chmod +x /DPDK-PktReplay/scripts/*
-RUN chmod +x /DPDK-PktReplay/start.sh
-
-# Copy Data
-COPY data /DPDK-PktReplay/data
-
-# Change working directory to Pktgen for running tests
+# Change working directory to DPDK-PktReplay
 WORKDIR /DPDK-PktReplay

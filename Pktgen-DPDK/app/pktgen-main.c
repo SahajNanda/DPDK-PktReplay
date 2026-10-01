@@ -71,7 +71,7 @@ pktgen_usage(const char *prgname)
            "  -f filename   Command file (.pkt) to execute\n"
 #endif
            "  -l filename   Write log to filename\n"
-           "  -s P:filepath PCAP packet stream file, 'P' is the port number\n"
+           "  -s P:filepath PCAP packet stream file or directory, 'P' is the port number\n"
            "  -P            Enable PROMISCUOUS mode on all ports\n"
            "  -g address    Optional IP address and port number default is (localhost:0x5606)\n"
            "                If -g is used that enable socket support as a server application\n"
@@ -277,12 +277,13 @@ pktgen_parse_args(int argc, char **argv)
 
     if (l2p_parse_mappings() < 0)
         pktgen_log_error("error or too many mapping entries");
-    // pktgen_pcap_open() moved after port config to avoid running out of memory
+    if (pktgen_pcap_open() < 0)
+        pktgen_log_error("error opening PCAP files");
 
     return ret;
 
 pcap_err:
-    pktgen_log_error("Invalid PCAP filename (%s) must include port number as P:filename", optarg);
+    pktgen_log_error("Invalid PCAP source (%s) must include port number as P:path", optarg);
     pktgen_usage(prgname);
     return -1;
 }
@@ -462,10 +463,6 @@ main(int argc, char **argv)
 
     /* Configure and initialize the ports */
     pktgen_config_ports();
-
-    /* Open PCAP files for configured ports */
-    if (pktgen_pcap_open() < 0)
-        pktgen_log_error("error opening PCAP files");
 
     if (pktgen.verbose) {
         pktgen_log_info("");

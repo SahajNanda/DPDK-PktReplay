@@ -1,5 +1,5 @@
 research/
-data/*.pcap
-
-__pycache__/
-*.pyc
+hugepages/
+data/captures/
+data/**/*.pcap
+.vscode

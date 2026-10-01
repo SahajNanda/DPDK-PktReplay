@@ -540,12 +540,22 @@ static __inline__ struct rte_mempool *
 l2p_get_pcap_mp(uint16_t pid)
 {
     l2p_t *l2p = l2p_get();
+    
+    // pcap and idx used to access active sections mempool
+    pcap_info_t *pcap;
+    uint8_t idx;
 
     if (pid >= RTE_MAX_ETHPORTS || l2p->ports[pid].pid >= RTE_MAX_ETHPORTS ||
         l2p->ports[pid].pcap_info == NULL)
         L2P_NULL_RET("Invalid port ID %u", pid);
 
-    return l2p->ports[pid].pcap_info->mp;
+    pcap = l2p->ports[pid].pcap_info; // Get the pcap_info_t for the port
+    idx  = pcap->active_section_idx; // Get the active section index
+
+    if (idx < PCAP_NUM_SECTIONS && pcap->sections[idx].mp != NULL)
+        return pcap->sections[idx].mp; // Return the mempool for the active section
+
+    return pcap->mp; // Fallback to the main mempool if the active section's mempool is not set
 }
 
 /**

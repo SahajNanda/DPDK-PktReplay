@@ -18,6 +18,7 @@
  */
 
 #include <pcap/bpf.h>
+#include <pthread.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,6 +27,18 @@ extern "C" {
 #define PCAP_MAGIC_NUMBER  0xa1b2c3d4 /**< PCAP global header magic (little-endian) */
 #define PCAP_MAJOR_VERSION 2          /**< PCAP file format major version */
 #define PCAP_MINOR_VERSION 4          /**< PCAP file format minor version */
+#define PCAP_NUM_SECTIONS  2          /**< Number of replay sections per port */
+
+/** One replay section for chunked PCAP loading. */
+typedef struct pcap_section_s {
+    struct rte_mempool *mp; /**< Mempool backing this section */
+    uint32_t pkt_count;     /**< Number of packets allocated in this section */
+    uint32_t pkt_loaded;    /**< Number of packets loaded into this section */
+    uint64_t budget_bytes;  /**< Hugepage budget assigned to this section */
+    uint64_t chunk_id;      /**< Chunk sequence number loaded into this section */
+    long file_offset_begin; /**< File offset before section load starts */
+    long file_offset_end;   /**< File offset after section load completes */
+} pcap_section_t;
 
 /** PCAP global file header. */
 typedef struct pcap_hdr_s {
@@ -51,14 +64,30 @@ typedef struct pcap_info_s {
     char *filename;                  /**< allocated string for filename of pcap */
     FILE *fp;                        /**< file pointer for pcap file */
     struct rte_mempool *mp;          /**< Mempool for storing packets */
+    pcap_section_t sections[PCAP_NUM_SECTIONS]; /**< Two replay sections */
+    uint8_t active_section_idx;      /**< Section currently selected for transmit */
     uint32_t convert;                /**< Endian flag value if 1 convert to host endian format */
     uint32_t max_pkt_size;           /**< largest packet found in pcap file */
     uint32_t avg_pkt_size;           /**< average packet size in pcap file */
     uint32_t pkt_count;              /**< Number of packets in pcap file */
     uint32_t pkt_index;              /**< Index of current packet in pcap file */
+    uint64_t next_chunk_id;          /**< Next chunk ID to assign during section load */
     pcap_hdr_t info;                 /**< information on the PCAP file */
     int32_t pcap_result;             /**< PCAP result of filter compile */
     struct bpf_program pcap_program; /**< PCAP filter program structure */
+
+    /* Background reload thread and synchronization primitives */
+    pthread_t reload_thread;         /**< Thread that handles background reloads */
+    pthread_mutex_t state_mutex;     /**< Protects reload state and flags */
+    pthread_cond_t reload_cond;      /**< Signals reload thread to start work */
+    pthread_cond_t reload_done_cond; /**< Signals transmission that reload completed */
+    int reload_request;              /**< Requested section index to reload, -1 if none */
+    int reload_in_progress;          /**< Section index currently reloading, -1 if none */
+    int section_locked[PCAP_NUM_SECTIONS]; /**< Logical locks for each section (1=locked) */
+    char **source_files;             /**< Ordered list of source PCAP files */
+    uint32_t source_file_count;      /**< Number of source files in source_files */
+    uint32_t source_file_index;      /**< Index of the current source file */
+    uint32_t source_convert;         /**< Endian conversion flag for current source file */
 
 } pcap_info_t;
 
@@ -80,43 +109,8 @@ int pktgen_pcap_add(char *filename, uint16_t port);
  */
 int pktgen_pcap_open(void);
 
-/**
- * Reload a PCAP file on a port starting from packet index 0.
- *
- * @param pid       Port ID.
- * @param filename  Path to replacement PCAP file.
- * @return
- *   0 on success, negative on error.
- */
-int pktgen_pcap_reload(uint16_t pid, const char *filename);
-
-/**
- * Reload a PCAP file on a port starting from a specific packet index.
- *
- * @param pid        Port ID.
- * @param filename   Path to replacement PCAP file.
- * @param start_pkt  Packet index to start replay from.
- * @return
- *   0 on success, negative on error.
- */
-int pktgen_pcap_reload_from(uint16_t pid, const char *filename, uint32_t start_pkt);
-
-/**
- * Reload a PCAP file with explicit additional packet allocation.
- *
- * Requests an exact pool size of: packets_in_file + add_pkt_count. When
- * add_pkt_count is non-zero, this path skips best-effort probing and performs
- * a single allocation attempt for deterministic sizing.
- *
- * @param pid            Port ID.
- * @param filename       Path to replacement PCAP file.
- * @param start_pkt      Packet index to start replay from.
- * @param add_pkt_count  Extra packets to allocate beyond file packet count.
- * @return
- *   0 on success, negative on error.
- */
-int pktgen_pcap_reload_with_opts(uint16_t pid, const char *filename, uint32_t start_pkt,
-                                 uint32_t add_pkt_count);
+/** Reload one replay section for a given port. */
+int pktgen_pcap_reload_section(uint16_t pid, uint8_t section_idx);
 
 /** Close all open PCAP file handles. */
 void pktgen_pcap_close(void);
